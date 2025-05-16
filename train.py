@@ -119,9 +119,9 @@ limb_connections = [
 ]
 
 # Загрузка данных
-csv_file = "filtered_train.csv"
+csv_file = "./data/raw/filtered_train.csv"
 img_dir = "/home/student/work/train/"
-output_image_dir = "results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+output_image_dir = "./data/checkpoints/results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
 dataset = DepthKeypointDataset(
     csv_file, img_dir, transform=transform, limb_connections=limb_connections
 )
@@ -225,7 +225,7 @@ if __name__ == "__main__":
             print(torch.round(raw_heatmap * 100) / 100)  # округлим для наглядности
 
             # PCK по координатам из тепловых карт (heatmap_coords)
-            val_pck_heatmap, val_pck_regressed = pck(val_heatmap_coords)
+            val_pck_heatmap = pck(val_heatmap_coords, val_target_coords)
 
             # 💾 Сохраняем лучшую модель по total loss
             if loss.item() < best_val_loss:
