@@ -20,15 +20,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+from utils import visualize_keypoints_with_heatmaps
+from model import DepthwiseSeparableConv, ResidualBlock, BlazePoseLite
+from dataset import DepthKeypointDataset
+
+
 def compute_losses(
     heatmap_coords,
-    regressed_coords,
     heatmaps,
     target_coords,
     target_heatmaps,
     alpha=0.1,   # вес для heatmap loss
     beta=10.0,   # вес для координат из soft-argmax
-    gamma=1.0,  # вес для координат из регрессии
     heatmap_size=64,
     img_size=224,
 ):

@@ -1,4 +1,23 @@
+import os
+from datetime import datetime
 
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset, Subset
+from torchvision import transforms
+from tqdm import tqdm
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 
@@ -9,7 +28,7 @@ class DepthwiseSeparableConv(nn.Module):
         self.depthwise = nn.Conv2d(in_channels, in_channels, 3, stride=stride, padding=1, groups=in_channels, bias=False)
         self.pointwise = nn.Conv2d(in_channels, out_channels, 1, bias=False)
         self.bn = nn.BatchNorm2d(out_channels)
-        self.act = nn.ReLU(inplace=True)
+        self.act = nn.ReLU()
 
     def forward(self, x):
         x = self.depthwise(x)
@@ -24,11 +43,11 @@ class ResidualBlock(nn.Module):
         self.block = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(channels, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
         )
-        self.act = nn.ReLU(inplace=True)
+        self.act = nn.ReLU()
 
 
 
@@ -56,13 +75,6 @@ class BlazePoseLite(nn.Module):
             ResidualBlock(192),
         )
 
-        # --- Прямая регрессия координат ---
-        self.coord_regressor = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # [B, 192, 1, 1]
-            nn.Flatten(),             # [B, 192]
-            nn.Linear(192, num_keypoints * 2)
-        )
-
         # --- Decoder ---
         self.up4 = nn.ConvTranspose2d(192 + 128, 128, kernel_size=2, stride=2)
         self.up3 = nn.ConvTranspose2d(128 + 64, 64, kernel_size=2, stride=2)
@@ -81,8 +93,6 @@ class BlazePoseLite(nn.Module):
         e5 = self.enc5(e4) # [B, 192, 4, 4]
 
         b = self.bottleneck(e5)
-
-        regressed_coords = self.coord_regressor(b).view(-1, self.num_keypoints, 2)
 
         b_up = F.interpolate(b, size=e4.shape[2:], mode='bilinear', align_corners=False)
         d4 = self.up4(torch.cat([b_up, e4], dim=1))  # 4 -> 8
@@ -104,12 +114,12 @@ class BlazePoseLite(nn.Module):
         # heatmaps = self.heatmap_out(d1)
         heatmaps = F.interpolate(heatmaps, size=(self.heatmap_size, self.heatmap_size), mode="bilinear", align_corners=False)
 
-        heatmaps = 25 * heatmaps # усиление контраста (проверено)
-        coords = self.soft_argmax_2d(heatmaps)
+        heatmaps = 15 * heatmaps # усиление контраста (проверено)
+        
                 # Softmax по пространству
         # B, K, H, W = heatmaps.shape
         # heatmaps = F.softmax(heatmaps.view(B, K, -1), dim=-1).view(B, K, H, W)
-        return coords, regressed_coords, heatmaps
+        return regressed_coords, heatmaps
 
     def soft_argmax_2d(self, heatmaps):
         B, C, H, W = heatmaps.shape
