@@ -115,16 +115,24 @@ class BlazePoseLite(nn.Module):
         return heatmaps
 
 
-def soft_argmax_2d(heatmaps):
-    B, C, H, W = heatmaps.shape
-    flat = heatmaps.view(B, C, -1)
-    probs = F.softmax(flat, dim=2)
+class RegressorWrapper(torch.nn.Module):
+    def __init__(self, tflite_model_path):
+        import tensorflow as tf
 
-    xs = torch.linspace(0, W - 1, W, device=heatmaps.device)
-    ys = torch.linspace(0, H - 1, H, device=heatmaps.device)
-    yv, xv = torch.meshgrid(ys, xs, indexing="ij")
-    xv, yv = xv.reshape(-1), yv.reshape(-1)
+        super().__init__()
+        self.interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
+        self.interpreter.allocate_tensors()
+        self.input_details = self.interpreter.get_input_details()
+        self.output_details = self.interpreter.get_output_details()
 
-    x = torch.sum(probs * xv, dim=2)
-    y = torch.sum(probs * yv, dim=2)
-    return torch.stack([x, y], dim=2)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Convert input to numpy
+        input_data = x.detach().cpu().numpy().astype(self.input_details[0]["dtype"])
+
+        # Set input tensor
+        self.interpreter.set_tensor(self.input_details[0]["index"], input_data)
+        self.interpreter.invoke()
+
+        # Get output
+        output_data = self.interpreter.get_tensor(self.output_details[0]["index"])
+        return torch.from_numpy(output_data)

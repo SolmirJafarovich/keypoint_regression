@@ -6,13 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from model import BlazePoseLite, soft_argmax_2d
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from tqdm import tqdm
 
 from dataset import DepthKeypointDataset
-from model import BlazePoseLite, soft_argmax_2d
+from src.config import config
 from utils import visualize_keypoints_with_heatmaps
 
 
@@ -22,8 +23,6 @@ def compute_losses(
     target_heatmaps,
     alpha=0.1,  # вес для heatmap loss
     beta=10.0,  # вес для координат из soft-argmax
-    heatmap_size=64,
-    img_size=224,
 ):
     """
     heatmap_coords: [B, K, 2] - из soft-argmax (в heatmap scale)
@@ -36,8 +35,8 @@ def compute_losses(
     heatmap_coords = soft_argmax_2d(heatmaps=heatmaps)
 
     # Приводим все координаты к одному масштабу
-    heatmap_coords_norm = heatmap_coords / heatmap_size
-    target_coords_norm = target_coords / img_size
+    heatmap_coords_norm = heatmap_coords / config.regressor.heatmap_size
+    target_coords_norm = target_coords / config.img_size
 
     # --- Loss тепловых карт ---
     # heatmaps = torch.sigmoid(heatmaps)  # приведение в [0,1]
@@ -57,14 +56,14 @@ def compute_losses(
     }
 
 
-def pck(preds, gts, img_size=224, heatmap_size=64, threshold=0.1):
+def pck(preds, gts, threshold=0.1):
     """
     Percentage of Correct Keypoints (PCK): процент ключей, попавших в радиус threshold.
     preds, gts: [B, N, 2]
     """
 
-    preds = preds / heatmap_size
-    gts = gts / img_size
+    preds = preds / config.regressor.heatmap_size
+    gts = gts / config.img_size
 
     dist = torch.norm(preds - gts, dim=2)
     correct = (dist < threshold).float()
@@ -75,7 +74,7 @@ def pck(preds, gts, img_size=224, heatmap_size=64, threshold=0.1):
 # Преобразования для изображений
 transform = transforms.Compose(
     [
-        transforms.Resize((224, 224)),
+        transforms.Resize((config.img_size, config.img_size)),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ]
@@ -120,14 +119,7 @@ limb_connections = [
 ]
 
 # Загрузка данных
-csv_file = "./data/raw/filtered_train.csv"
-img_dir = "/home/student/work/train/"
-output_image_dir = "./data/checkpoints/results_" + datetime.now().strftime(
-    "%Y%m%d_%H%M%S"
-)
-dataset = DepthKeypointDataset(
-    csv_file, img_dir, transform=transform, limb_connections=limb_connections
-)
+dataset = DepthKeypointDataset(transform=transform, limb_connections=limb_connections)
 
 
 # Разделение на обучающую и валидационную выборки
@@ -166,6 +158,7 @@ best_val_loss = 0
 best_pck = 0
 
 if __name__ == "__main__":
+    config.init_checkpoint("regressor")
     for epoch in range(num_epochs):
         model.train()
         for batch in tqdm(
@@ -187,8 +180,6 @@ if __name__ == "__main__":
                 target_heatmaps=target_heatmaps,
                 alpha=10.0,
                 beta=10.0,
-                heatmap_size=64,
-                img_size=224,
             )
 
             loss.backward()
@@ -230,19 +221,13 @@ if __name__ == "__main__":
             # PCK по координатам из тепловых карт (heatmap_coords)
             val_pck_heatmap = pck(val_heatmap_coords, val_target_coords)
 
-            # 💾 Сохраняем лучшую модель по total loss
-            if loss.item() < best_val_loss:
-                best_val_loss = loss.item()
-                torch.save(model.state_dict(), "best_model.pth")
-                print(f"✅ Saved best model (loss={best_val_loss:.4f})")
-
             # 💾 Сохраняем лучшую модель по PCK heatmaps
             if val_pck_heatmap > best_pck:
-                os.makedirs(output_image_dir, exist_ok=True)
+                config.checkpoint.mkdir(exist_ok=True, parents=True)
                 best_pck = val_pck_heatmap
                 torch.save(
                     model.state_dict(),
-                    os.path.join(output_image_dir, "best_model_pck2.pth"),
+                    config.checkpoint / "weights.pth",
                 )
                 print(f"✅ Saved best model by PCK ({best_pck:.2f})")
 
@@ -260,7 +245,6 @@ if __name__ == "__main__":
                 pred_points=val_heatmap_coords[0].cpu().numpy(),
                 gt_points=val_target_coords[0].cpu().numpy(),
                 limb_connections=limb_connections,
-                output_dir=output_image_dir,
                 epoch=epoch,
                 sample_idx=0,
                 gt_heatmaps=val_target_heatmaps[0].cpu(),

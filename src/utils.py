@@ -1,9 +1,10 @@
-import os
-
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
+
+from src.config import config
 
 
 def visualize_keypoints_with_heatmaps(
@@ -12,7 +13,6 @@ def visualize_keypoints_with_heatmaps(
     pred_points=None,
     gt_points=None,
     limb_connections=None,
-    output_dir=None,
     epoch=0,
     sample_idx=0,
     figsize=(18, 6),
@@ -22,8 +22,7 @@ def visualize_keypoints_with_heatmaps(
     Визуализация: ключевые точки, предсказанные heatmap и GT heatmap (три картинки рядом)
     """
     # Создаем директорию если нужно
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    config.checkpoint.mkdir(exist_ok=True, parents=True)
 
     try:
         # Конвертация данных
@@ -143,10 +142,8 @@ def visualize_keypoints_with_heatmaps(
         plt.tight_layout()
 
         # Сохранение и закрытие
-        if output_dir:
-            save_path = os.path.join(
-                output_dir, f"epoch_{epoch}_sample_{sample_idx}.png"
-            )
+        if config.checkpoint:
+            save_path = config.checkpoint / f"epoch_{epoch}_sample_{sample_idx}.png"
             plt.savefig(save_path, bbox_inches="tight", dpi=100)
             plt.close(fig)
         else:
@@ -156,3 +153,18 @@ def visualize_keypoints_with_heatmaps(
         print(f"Visualization error: {str(e)}")
         if "fig" in locals():
             plt.close(fig)
+
+
+def soft_argmax_2d(heatmaps):
+    B, C, H, W = heatmaps.shape
+    flat = heatmaps.view(B, C, -1)
+    probs = F.softmax(flat, dim=2)
+
+    xs = torch.linspace(0, W - 1, W, device=heatmaps.device)
+    ys = torch.linspace(0, H - 1, H, device=heatmaps.device)
+    yv, xv = torch.meshgrid(ys, xs, indexing="ij")
+    xv, yv = xv.reshape(-1), yv.reshape(-1)
+
+    x = torch.sum(probs * xv, dim=2)
+    y = torch.sum(probs * yv, dim=2)
+    return torch.stack([x, y], dim=2)

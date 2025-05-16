@@ -1,3 +1,4 @@
+import json
 import os
 
 import cv2
@@ -6,13 +7,14 @@ import pandas as pd
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from torchvision import transforms
+
+from src.config import config
 
 
 class DepthKeypointDataset(Dataset):
     def __init__(
         self,
-        csv_file,
-        img_dir,
         transform=None,
         limb_connections=None,
         visualize=False,
@@ -27,8 +29,7 @@ class DepthKeypointDataset(Dataset):
             visualize (bool): если True, сохраняет изображения с наложенным скелетом.
             output_dir (str): директория для сохранения визуализаций.
         """
-        self.data = pd.read_csv(csv_file)
-        self.img_dir = img_dir
+        self.data = pd.read_csv(config.regressor.csv_file)
         self.transform = transform
         self.limb_connections = limb_connections
         self.visualize = visualize
@@ -42,7 +43,7 @@ class DepthKeypointDataset(Dataset):
 
     def __getitem__(self, idx):
         # Загрузка изображения
-        img_path = os.path.join(self.img_dir, self.data.iloc[idx, 0])
+        img_path = config.regressor.img_dir / self.data.iloc[idx, 0]
         image = Image.open(img_path).convert(
             "L"
         )  # глубинные изображения — одноканальные
@@ -118,3 +119,24 @@ class DepthKeypointDataset(Dataset):
 
         save_path = os.path.join(self.output_dir, f"sample_{idx}.png")
         cv2.imwrite(save_path, image_color)
+
+
+class CachedPoseDataset(Dataset):
+    def init(self, cache_file, transform=None):
+        with open(cache_file, "r") as f:
+            self.samples = json.load(f)
+        self.transform = transform or transforms.ToTensor()
+
+    def len(self):
+        return len(self.samples)
+
+    def getitem(self, idx):
+        sample = self.samples[idx]
+        image = Image.open(sample["path"]).convert("L")
+        image_tensor = self.transform(image)
+
+        return {
+            "image": image_tensor,
+            "keypoints": torch.tensor(sample["keypoints"], dtype=torch.float),
+            "label": torch.tensor(sample["label"], dtype=torch.long),
+        }
