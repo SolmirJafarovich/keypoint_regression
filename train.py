@@ -238,6 +238,7 @@ if __name__ == "__main__":
 
             # 💾 Сохраняем лучшую модель по PCK heatmaps
             if val_pck_heatmap > best_pck:
+                os.makedirs(output_image_dir, exist_ok=True)
                 best_pck = val_pck_heatmap
                 torch.save(
                     model.state_dict(),

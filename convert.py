@@ -12,7 +12,7 @@ from model import BlazePoseLite
 
 # === Load model ===
 model = BlazePoseLite()
-model.load_state_dict(torch.load("./weights/best_model_pck1.pth", map_location="cuda"))
+model.load_state_dict(torch.load("/home/student/work/new_project/data/checkpoints/results_20250516_150325/best_model_pck2.pth", map_location="cuda"))
 model.eval()
 
 
