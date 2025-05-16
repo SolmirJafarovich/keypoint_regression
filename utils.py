@@ -1,23 +1,9 @@
 import os
-from datetime import datetime
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from PIL import Image
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset, Subset
-from torchvision import transforms
-from tqdm import tqdm
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 
 def visualize_keypoints_with_heatmaps(
@@ -25,7 +11,6 @@ def visualize_keypoints_with_heatmaps(
     heatmaps,
     pred_points=None,
     gt_points=None,
-    pred_points_reg=None,
     limb_connections=None,
     output_dir=None,
     epoch=0,
@@ -57,7 +42,6 @@ def visualize_keypoints_with_heatmaps(
         # Преобразование точек в numpy array если они тензоры
         if pred_points is not None and isinstance(pred_points, torch.Tensor):
             pred_points = pred_points.detach().cpu().numpy()
-        
 
         if gt_points is not None and isinstance(gt_points, torch.Tensor):
             gt_points = gt_points.detach().cpu().numpy()
@@ -71,7 +55,7 @@ def visualize_keypoints_with_heatmaps(
             img_with_points = cv2.cvtColor(img_with_points, cv2.COLOR_GRAY2BGR)
 
         pred_points = pred_points / 64 * 224
-        
+
         # Рисуем GT точки (синие)
         if gt_points is not None:
             for point in gt_points:
@@ -98,18 +82,6 @@ def visualize_keypoints_with_heatmaps(
                             img_with_points, (int(x), int(y)), 3, (0, 0, 255), -1
                         )
 
-        # if pred_points_reg is not None:
-        #     for point in pred_points_reg:
-        #         if len(point) >= 2:
-        #             x, y = point[0], point[1]
-        #             if (
-        #                 0 <= x < img_with_points.shape[1]
-        #                 and 0 <= y < img_with_points.shape[0]
-        #             ):
-        #                 cv2.circle(
-        #                     img_with_points, (int(x), int(y)), 3, (100, 100, 255), -1
-        #                 )
-
         # Рисуем соединения (зеленые)
         if limb_connections is not None and gt_points is not None:
             for i, j in limb_connections:
@@ -126,22 +98,6 @@ def visualize_keypoints_with_heatmaps(
                             (0, 255, 0),
                             1,
                         )
-
-        # if limb_connections is not None and pred_points_reg is not None:
-        #     for i, j in limb_connections:
-        #         if i < len(pred_points_reg) and j < len(pred_points_reg):
-        #             x1, y1 = pred_points_reg[i][0], pred_points_reg[i][1]
-        #             x2, y2 = pred_points_reg[j][0], pred_points_reg[j][1]
-        #             if all(0 <= x < img_with_points.shape[1] for x in [x1, x2]) and all(
-        #                 0 <= y < img_with_points.shape[0] for y in [y1, y2]
-        #             ):
-        #                 cv2.line(
-        #                     img_with_points,
-        #                     (int(x1), int(y1)),
-        #                     (int(x2), int(y2)),
-        #                     (255, 100, 100),
-        #                     1,
-        #                 )
 
         if limb_connections is not None and pred_points is not None:
             for i, j in limb_connections:
@@ -164,17 +120,12 @@ def visualize_keypoints_with_heatmaps(
         ax1.axis("off")
 
         if heatmaps is not None:
-            # 2. Предсказанные heatmap
-            # max_heatmap = heatmaps.max(axis=0)  # if heatmaps.ndim == 3 else heatmaps
-            # heatmap_vis = cv2.resize(max_heatmap, (image.shape[1], image.shape[0]))
-
             heatmap_vis = heatmaps.max(axis=0)
             heatmap_vis -= heatmap_vis.min()
             heatmap_vis /= heatmap_vis.max() + 1e-6
             heatmap_vis = cv2.resize(heatmap_vis, (image.shape[1], image.shape[0]))
 
             im = ax2.imshow(heatmap_vis, cmap="jet", vmin=0, vmax=1)
-            # im = ax2.imshow(heatmap_vis, cmap="jet", vmin=0, vmax=1)
             plt.colorbar(im, ax=ax2)
             ax2.set_title("Predicted Heatmap")
             ax2.axis("off")
