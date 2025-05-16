@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 import numpy as np
@@ -121,7 +122,9 @@ limb_connections = [
 # Загрузка данных
 csv_file = "./data/raw/filtered_train.csv"
 img_dir = "/home/student/work/train/"
-output_image_dir = "./data/checkpoints/results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+output_image_dir = "./data/checkpoints/results_" + datetime.now().strftime(
+    "%Y%m%d_%H%M%S"
+)
 dataset = DepthKeypointDataset(
     csv_file, img_dir, transform=transform, limb_connections=limb_connections
 )
@@ -157,7 +160,7 @@ model = BlazePoseLite().to(device)
 criterion = nn.SmoothL1Loss().to(device)  # Функция потерь для координат ключевых точек
 optimizer = optim.AdamW(model.parameters(), lr=0.0001)
 
-num_epochs = 50
+num_epochs = 150
 idx = 0
 best_val_loss = 0
 best_pck = 0
@@ -236,7 +239,10 @@ if __name__ == "__main__":
             # 💾 Сохраняем лучшую модель по PCK heatmaps
             if val_pck_heatmap > best_pck:
                 best_pck = val_pck_heatmap
-                torch.save(model.state_dict(), "best_model_pck2.pth")
+                torch.save(
+                    model.state_dict(),
+                    os.path.join(output_image_dir, "best_model_pck2.pth"),
+                )
                 print(f"✅ Saved best model by PCK ({best_pck:.2f})")
 
             print(
