@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Annotated
+from rich.progress import track
 
 import ai_edge_torch
 import torch
@@ -15,6 +16,7 @@ from torchvision import transforms
 from src.config import config, device
 from src.dataset import DepthKeypointDataset
 from src.models import BlazePoseLite, CombinedClassifier
+from ai_edge_torch.quantize.quant_config import QuantConfig
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -34,11 +36,8 @@ def calibrate(model):
         shuffle=True,
     )
     with torch.no_grad():
-        for batch in data_loader:
+        for batch in track(data_loader, description="Calibration"):
             images = batch["image"]
-            print("Model input dtype:", images.dtype)
-            print(images.shape, images.dtype, images.device)
-            print(next(model.parameters()).device)
             _ = model(images.to(torch.float32))
 
 
@@ -71,7 +70,8 @@ def convert(
 
     # === Configure quantization ===
 
-    quantizer = XNNPACKQuantizer().set_global(get_symmetric_quantization_config())
+    quant_config = get_symmetric_quantization_config()
+    quantizer = XNNPACKQuantizer().set_global(quant_config)
 
     # === Quantize ===
 
@@ -88,13 +88,8 @@ def convert(
     tflite_model = ai_edge_torch.convert(
         module=model_i8,
         sample_args=sample_input,
+        quant_config=quant_config
     )
-
-    # tfl_converter_flags = {'optimizations': [tf.lite.Optimize.DEFAULT]}
-
-    # tflite_model = ai_edge_torch.convert(
-    #     model_fp32, sample_input, _ai_edge_converter_flags=tfl_converter_flags
-    # )
 
     # === Test the model ===
 

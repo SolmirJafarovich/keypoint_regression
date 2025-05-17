@@ -1086,12 +1086,14 @@ dependencies = [
     { name = "jax", version = "0.6.0", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or sys_platform == 'darwin'" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "onnx2tf" },
     { name = "opencv-python" },
     { name = "pandas" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "scikit-learn" },
+    { name = "tf-keras" },
     { name = "torch" },
     { name = "torchmetrics" },
     { name = "torchvision" },
@@ -1105,12 +1107,14 @@ requires-dist = [
     { name = "jax", extras = ["cuda12"], specifier = ">=0.5.3" },
     { name = "matplotlib", specifier = ">=3.10.3" },
     { name = "numpy", specifier = ">=2.1.3" },
+    { name = "onnx2tf", specifier = ">=1.27.7" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pandas", specifier = ">=2.2.3" },
     { name = "pillow", specifier = ">=11.2.1" },
     { name = "pydantic", specifier = ">=2.11.4" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
+    { name = "tf-keras", specifier = ">=2.19.0" },
     { name = "torch", specifier = ">=2.6.0" },
     { name = "torchmetrics", specifier = ">=1.7.1" },
     { name = "torchvision", specifier = ">=0.21.0" },
@@ -1560,6 +1564,15 @@ version = "12.4.127"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/87/20/199b8713428322a2f22b722c62b8cc278cc53dffa9705d744484b5035ee9/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:781e950d9b9f60d8241ccea575b32f5105a5baf4c2351cab5256a24869f12a1a", size = 99144, upload-time = "2024-04-03T20:56:12.406Z" },
+]
+
+[[package]]
+name = "onnx2tf"
+version = "1.27.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/70/e7ac8c296e8578d5ef1555042e9d1857ed3c7fe45567794b1920bf5588b9/onnx2tf-1.27.7.tar.gz", hash = "sha256:692985aab314a26f91a93c77580333a8158c3eb35a494f9bb6084197e83d1b7b", size = 338711, upload-time = "2025-05-17T12:16:56.87Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/7b/669baf5aecd9804f093a9ab7df8a188362b78b23c9e4ea269a257ff55892/onnx2tf-1.27.7-py3-none-any.whl", hash = "sha256:06293aadbfd2c2723fba58567c158ec65c5c2fb71799fb99d3ef1b4fb3954bf5", size = 446472, upload-time = "2025-05-17T12:16:54.965Z" },
 ]
 
 [[package]]
@@ -2264,6 +2277,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ca/6c/3d75c196ac07ac8749600b60b03f4f6094d54e132c4d94ebac6ee0e0add0/termcolor-3.1.0.tar.gz", hash = "sha256:6a6dd7fbee581909eeec6a756cff1d7f7c376063b14e4a298dc4980309e55970", size = 14324, upload-time = "2025-04-30T11:37:53.791Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/bd/de8d508070629b6d84a30d01d57e4a65c69aa7f5abe7560b8fad3b50ea59/termcolor-3.1.0-py3-none-any.whl", hash = "sha256:591dd26b5c2ce03b9e43f391264626557873ce1d379019786f99b0c2bee140aa", size = 7684, upload-time = "2025-04-30T11:37:52.382Z" },
+]
+
+[[package]]
+name = "tf-keras"
+version = "2.19.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tensorflow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a9/71/a6e82b8e8ce04a8ab1ff0560791698b70d1b2dda1a0270f1d69a834e8880/tf_keras-2.19.0.tar.gz", hash = "sha256:b09a407d87a4571ce1e8ca985cfc68483e3d63b2518a5d79a97ad92cb64dbe9c", size = 1261172, upload-time = "2025-03-03T21:24:13.582Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/6b/d245122d108a94df5969ee7408ad343af1627730e91478e01ef098976bfa/tf_keras-2.19.0-py3-none-any.whl", hash = "sha256:4f339e800987b39d1548a8c76a7b33b6801a97ec7fcd89c299ec29741f7890bd", size = 1726787, upload-time = "2025-03-03T21:24:11.826Z" },
 ]
 
 [[package]]
