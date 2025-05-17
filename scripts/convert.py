@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 
-from dataset import DepthKeypointDataset
 from src.config import config, device
+from src.dataset import DepthKeypointDataset
 from src.models import BlazePoseLite, CombinedClassifier
 
 app = typer.Typer()
