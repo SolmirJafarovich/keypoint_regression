@@ -16,6 +16,7 @@ from torch.ao.quantization.quantizer.xnnpack_quantizer import (
 )
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
+from torch.ao.quantization import move_exported_model_to_eval
 
 from src.config import config
 from src.dataset import DepthKeypointDataset
@@ -85,6 +86,7 @@ def convert(
 
     model_i8 = convert_pt2e(model_fp32, fold_quantize=True)
 
+    move_exported_model_to_eval(model_i8)
     # === .pth -> ONNX ===
     typer.echo(".pth -> ONNX")
 
