@@ -45,7 +45,7 @@ class DepthKeypointDataset(Dataset):
 
     def __getitem__(self, idx):
         # Загрузка изображения
-        img_path = config.regressor.img_dir / self.data.iloc[idx, 0]
+        img_path = config.regressor.img_dir / str(self.data.iloc[idx, 0])
         image = Image.open(img_path).convert(
             "L"
         )  # глубинные изображения — одноканальные

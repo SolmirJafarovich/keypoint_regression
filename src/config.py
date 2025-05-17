@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 class RegressorConfig(BaseModel):
-    csv_file: Path = Path("./data/raw/regressor")
+    csv_file: Path = Path("/home/student/work/filtered_train.csv")
     img_dir: Path = Path("/home/student/work/train/")
 
     heatmap_size: int = 64
