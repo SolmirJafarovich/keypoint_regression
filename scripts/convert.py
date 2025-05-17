@@ -9,11 +9,11 @@ from ai_edge_torch.quantize.pt2e_quantizer import (
     get_symmetric_quantization_config,
 )
 from ai_edge_torch.quantize.quant_config import QuantConfig
-from model import BlazePoseLite
 from torch._export import capture_pre_autograd_graph
 from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from tqdm import tqdm
 
 from dataset import DepthKeypointDataset
 from src.config import config, device
@@ -78,7 +78,7 @@ def calibrate(model):
     )
     model.eval()
     with torch.no_grad():
-        for batch in data_loader:
+        for batch in tqdm(data_loader, desc="Calibration"):
             images = batch["image"].to(device)
             model(images)
 
