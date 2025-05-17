@@ -19,7 +19,7 @@ from src.models import BlazePoseLite, CombinedClassifier
 app = typer.Typer(pretty_exceptions_enable=False)
 
 
-def calibrate(model):
+def representative_dataset_gen():
     transform = transforms.Compose(
         [
             transforms.Resize((config.img_size, config.img_size)),
@@ -29,14 +29,17 @@ def calibrate(model):
     )
     dataset = DepthKeypointDataset(transform=transform)
     data_loader = DataLoader(
-        dataset=Subset(dataset, list(range(500))),
-        batch_size=config.batch,
-        shuffle=True,
+        dataset=Subset(
+            dataset, list(range(100))
+        ),  # 100 изображений достаточно для калибровки
+        batch_size=1,
+        shuffle=False,
     )
-    with torch.no_grad():
-        for batch in track(data_loader, description="Calibration"):
-            images = batch["image"]
-            _ = model(images.to(torch.float32))
+
+    for batch in track(data_loader, description="Generating representative dataset"):
+        image = batch["image"].numpy()  # shape: [1, 1, H, W]
+        # TFLite expects NHWC format and float32 values
+        yield [image.transpose(0, 2, 3, 1).astype("float32")]
 
 
 @app.command()
@@ -63,21 +66,11 @@ def convert(
     model_fp32.load_state_dict(state_dict)
     model_fp32.eval()
 
-    # === Quantize ===
-
-    model_fp32.qconfig = torch.ao.quantization.default_qconfig
-
-    torch.ao.quantization.prepare(model_fp32, inplace=True)
-
-    calibrate(model_fp32)
-
-    model_i8 = torch.ao.quantization.convert(model_fp32)
-
     # === .pth -> ONNX ===
     typer.echo(".pth -> ONNX")
 
     torch.onnx.export(
-        model=model_i8,
+        model=model_fp32,
         args=sample_input,
         f=checkpoint / "weights.onnx",  # where should it be saved
         verbose=False,
@@ -97,14 +90,16 @@ def convert(
     saved_model_dir = checkpoint / "saved_model"
     tf_rep.export_graph(str(saved_model_dir))
 
-    # TensorFlow SavedModel -> TFLite
-    typer.echo("tensorflow -> tflite")
+    # === TensorFlow SavedModel -> TFLite (with quantization) ===
+    typer.echo("tensorflow -> tflite (with int8 quantization)")
+
     converter = tf.lite.TFLiteConverter.from_saved_model(str(saved_model_dir))
-    converter.experimental_new_converter = True
-    converter.target_spec.supported_ops = [
-        tf.lite.OpsSet.TFLITE_BUILTINS,
-        tf.lite.OpsSet.SELECT_TF_OPS,
-    ]
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    converter.representative_dataset = representative_dataset_gen
+    converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+    converter.inference_input_type = tf.uint8
+    converter.inference_output_type = tf.uint8
+
     tf_lite_model = converter.convert()
     with open(checkpoint / "weights.tflite", "wb") as f:
         f.write(tf_lite_model)
