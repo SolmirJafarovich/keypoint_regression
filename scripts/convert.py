@@ -9,14 +9,8 @@ import typer
 from onnx_tf.backend import prepare
 from rich import print
 from rich.progress import track
-from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
-from torch.ao.quantization.quantizer.xnnpack_quantizer import (
-    XNNPACKQuantizer,
-    get_symmetric_quantization_config,
-)
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
-from torch.ao.quantization import move_exported_model_to_eval
 
 from src.config import config
 from src.dataset import DepthKeypointDataset
@@ -69,24 +63,16 @@ def convert(
     model_fp32.load_state_dict(state_dict)
     model_fp32.eval()
 
-    # === Program capture ===
-
-    model_fp32 = torch.export.export_for_training(model_fp32, sample_input).module()
-
-    # === Configure quantization ===
-
-    quant_config = get_symmetric_quantization_config()
-    quantizer = XNNPACKQuantizer().set_global(quant_config)
-
     # === Quantize ===
 
-    model_fp32 = prepare_pt2e(model_fp32, quantizer)
+    model_fp32.qconfig = torch.ao.quantization.default_qconfig
+
+    torch.ao.quantization.prepare(model_fp32, inplace=True)
 
     calibrate(model_fp32)
 
-    model_i8 = convert_pt2e(model_fp32, fold_quantize=True)
+    model_i8 = torch.ao.quantization.convert(model_fp32)
 
-    move_exported_model_to_eval(model_i8)
     # === .pth -> ONNX ===
     typer.echo(".pth -> ONNX")
 
