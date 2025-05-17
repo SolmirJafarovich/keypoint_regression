@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Annotated
-
+import os
 import onnx
 import tensorflow as tf
 import torch
@@ -9,6 +9,8 @@ from onnx_tf.backend import prepare
 
 from src.config import config
 from src.models import BlazePoseLite, CombinedClassifier
+
+from rich import print
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -19,6 +21,7 @@ def convert(
     is_classifier: Annotated[bool, typer.Option("--is-classifier")] = False,
 ):
     # === Load and initialize model ===
+    typer.echo("Loading model")
 
     if is_classifier:
         model_fp32 = CombinedClassifier()
@@ -32,46 +35,44 @@ def convert(
             torch.randn(1, 1, config.img_size, config.img_size, dtype=torch.float),
         )
 
+    print(checkpoint / "weights.pth")
+
     state_dict = torch.load(checkpoint / "weights.pth", weights_only=True)
     model_fp32.load_state_dict(state_dict)
     model_fp32.eval()
 
     # === .pth -> ONNX ===
-
+    typer.echo(".pth -> ONNX")
+    
     torch.onnx.export(
         model=model_fp32,
         args=sample_input,
         f=checkpoint / "weights.onnx",  # where should it be saved
         verbose=False,
         export_params=True,
-        do_constant_folding=False,  # fold constant values for optimization
+        do_constant_folding=True,  # fold constant values for optimization
         # do_constant_folding=True,   # fold constant values for optimization
         input_names=["input"],
         output_names=["output"],
     )
     onnx_model = onnx.load(checkpoint / "weights.onnx")
     onnx.checker.check_model(onnx_model)
+    
+    # === ONNX -> TensorFlow SavedModel ===
+    typer.echo("ONNX -> tensorflow")
 
-    # === ONNX -> tensorflow ===
-
-    tf_rep = prepare(onnx_model)  # creating TensorflowRep object
-
-    tf_rep.export_graph(checkpoint / "weights.pb")
-
-    # === tensorflow -> tflite
-
-    converter = tf.compat.v1.lite.TFLiteConverter.from_frozen_graph(
-        checkpoint / "weights.pb",
-        input_arrays=["input"],
-        output_arrays=["output"],
-    )
+    tf_rep = prepare(onnx_model)
+    saved_model_dir = checkpoint / "saved_model"
+    tf_rep.export_graph(str(saved_model_dir))
+    
+    # TensorFlow SavedModel -> TFLite
+    typer.echo("tensorflow -> tflite")
+    converter = tf.lite.TFLiteConverter.from_saved_model(str(saved_model_dir))
     converter.experimental_new_converter = True
-
     converter.target_spec.supported_ops = [
-        tf.compat.v1.lite.OpsSet.TFLITE_BUILTINS,
-        tf.compat.v1.lite.OpsSet.SELECT_TF_OPS,
+        tf.lite.OpsSet.TFLITE_BUILTINS,
+        tf.lite.OpsSet.SELECT_TF_OPS,
     ]
-
     tf_lite_model = converter.convert()
     with open(checkpoint / "weights.tflite", "wb") as f:
         f.write(tf_lite_model)

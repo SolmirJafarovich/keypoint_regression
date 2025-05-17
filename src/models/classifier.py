@@ -10,7 +10,7 @@ from src.config import config
 class CombinedClassifier(nn.Module):
     def __init__(self, keypoint_dim=66):
         super().__init__()
-        base = mobilenet_v2(weights=None)
+        base = mobilenet_v2(pretrained=False)
         base.features[0][0] = nn.Conv2d(
             1, 32, kernel_size=3, stride=2, padding=1, bias=False
         )

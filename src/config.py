@@ -1,7 +1,7 @@
 import random
 from datetime import datetime
 from pathlib import Path
-
+from typing import Optional
 import torch
 from pydantic import BaseModel
 
@@ -25,7 +25,7 @@ class Config(BaseModel):
     img_size: int = 224
     batch: int = 64
 
-    checkpoint: Path | None = None
+    checkpoint: Optional[Path] = None
 
     def init_checkpoint(self, name: str):
         self.checkpoint = Path(

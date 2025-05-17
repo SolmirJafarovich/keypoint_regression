@@ -3,11 +3,17 @@ name = "new-project"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = "==3.7.9"
+requires-python = ">=3.10, <3.11"
 dependencies = [
-    "torch==1.5.1",
-    "onnx==1.7.0",
-    "tensorflow==2.2.0",
-    "tensorflow-addons==0.11.2",
-    "onnx-tf==1.6.0"
+    "torch",
+    "tensorflow==2.12",
+    "onnx-tf",
+    "typer",
+    "pydantic",
+    "tensorflow-probability==0.20.0",
+    "tensorflow-addons==0.20.0",
+    "tf_keras",
+    "torchvision>=0.22.0",
 ]
+[tool.uv.sources]
+onnx-tf = { path = "./onnx-tensorflow" }
