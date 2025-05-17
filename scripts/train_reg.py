@@ -134,13 +134,13 @@ val_dataset = Subset(dataset, _val_dataset)
 # Создание DataLoader
 train_loader = DataLoader(
     train_dataset,
-    batch_size=64,
+    batch_size=config.batch,
     shuffle=True,
     pin_memory=True,
 )
 val_loader = DataLoader(
     val_dataset,
-    batch_size=64,
+    batch_size=config.batch,
     shuffle=False,
     pin_memory=True,
 )

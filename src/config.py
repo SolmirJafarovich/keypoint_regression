@@ -1,5 +1,5 @@
-import datetime
 import random
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -23,19 +23,23 @@ class ClassifierConfig(BaseModel):
 class Config(BaseModel):
     # === Common ===
     img_size: int = 224
+    batch: int = 64
 
     checkpoint: Path | None = None
 
-    def init_checkpoint(self, name: str) -> Path:
-        self.checkpoint = (
+    def init_checkpoint(self, name: str):
+        self.checkpoint = Path(
             "./data/checkpoints/" + f"{name}_{datetime.now().strftime('%m%d_%H:%M:%S')}"
         )
+        self.checkpoint.mkdir(parents=True, exist_ok=False)
 
     classifier: ClassifierConfig = ClassifierConfig()
     regressor: RegressorConfig = RegressorConfig()
 
     # === Eval settings ===
-    eval_dataset: Path = Path("./data/raw/test")
+    eval_dataset: Path = Path(
+        "/home/syrenny/Desktop/clones/keypoint_regression/data/raw/test"
+    )
 
 
 torch.manual_seed(42)

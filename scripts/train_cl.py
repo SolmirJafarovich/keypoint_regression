@@ -1,22 +1,12 @@
-from src.config import config
-
-config.init_checkpoint("classifier")
-
-
-import json
 import os
-import random
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from PIL import Image
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
-from torchvision.models import mobilenet_v2
 from tqdm import tqdm
 
 from src.config import config, device
@@ -35,6 +25,7 @@ train_idx, val_idx = train_test_split(
 )
 train_loader = DataLoader(Subset(dataset, train_idx), batch_size=64, shuffle=True)
 val_loader = DataLoader(Subset(dataset, val_idx), batch_size=64)
+config.init_checkpoint("classifier")
 
 # Модель, оптимизатор, лосс
 model = CombinedClassifier().to(device)

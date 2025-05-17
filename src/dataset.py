@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -9,7 +10,8 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-from src.config import config
+from src.config import config, device
+from src.utils import soft_argmax_2d
 
 
 class DepthKeypointDataset(Dataset):
@@ -121,22 +123,42 @@ class DepthKeypointDataset(Dataset):
         cv2.imwrite(save_path, image_color)
 
 
-class CachedPoseDataset(Dataset):
-    def init(self, cache_file, transform=None):
-        with open(cache_file, "r") as f:
-            self.samples = json.load(f)
-        self.transform = transform or transforms.ToTensor()
+class KeypointPrecomputedDataset(Dataset):
+    def __init__(self):
+        self.class_to_label = {"Belly": 0, "Back": 1, "Right_side": 2, "Left_side": 3}
+        self.samples = []
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize((config.img_size, config.img_size)),
+                transforms.ToTensor(),
+            ]
+        )
+        self._prepare_samples()
 
-    def len(self):
+    def _prepare_samples(self):
+        for class_name in config.eval_dataset.iterdir():
+            class_path = config.eval_dataset / class_name
+            if not class_path.is_dir():
+                continue
+
+            class_name = class_path.name
+            if class_name not in self.class_to_label:
+                continue
+
+            label = self.class_to_label[class_name]
+
+            for fname in os.listdir(class_path):
+                if not fname.lower().endswith((".png", ".jpg")):
+                    continue
+
+                full_path = class_path / fname
+                image = Image.open(full_path).convert("L")
+                image_tensor = self.transform(image).to(device)
+
+                self.samples.append((image_tensor, label))
+
+    def __len__(self):
         return len(self.samples)
 
-    def getitem(self, idx):
-        sample = self.samples[idx]
-        image = Image.open(sample["path"]).convert("L")
-        image_tensor = self.transform(image)
-
-        return {
-            "image": image_tensor,
-            "keypoints": torch.tensor(sample["keypoints"], dtype=torch.float),
-            "label": torch.tensor(sample["label"], dtype=torch.long),
-        }
+    def __getitem__(self, idx):
+        return self.samples[idx]

@@ -5,12 +5,12 @@ from statistics import mean
 
 import torch
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from torch.utils.data import DataLoader
 from torchmetrics import Accuracy, F1Score, Precision, Recall
 
-from config import config, device
-from src.dataset import CachedPoseDataset
+from src.config import config, device
+from src.dataset import KeypointPrecomputedDataset
 from src.models import ClassifierWrapper, RegressorWrapper
 from src.utils import soft_argmax_2d
 
@@ -22,6 +22,8 @@ class InferenceStep(BaseModel):
     targets: torch.Tensor
     time: float  # seconds
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 
 class InferenceGenerator:
     def __init__(self, regressor_path: Path, classifier_path: Path):
@@ -32,13 +34,12 @@ class InferenceGenerator:
             ClassifierWrapper(classifier_path / "weights.tflite").eval().to(device)
         )
 
-        self.dataset = CachedPoseDataset(config.eval_dataset)
+        self.dataset = KeypointPrecomputedDataset()
 
         self.loader = DataLoader(
             self.dataset,
-            batch_size=64,
+            batch_size=1,
             shuffle=True,
-            pin_memory=True,
         )
 
     def step(self) -> InferenceStep:
@@ -64,16 +65,24 @@ class Metrics:
     def __init__(self):
         self.metrics = {
             "Accuracy": Accuracy(
-                task="multiclass", num_classes=config.num_classes, average="weighted"
+                task="multiclass",
+                num_classes=config.classifier.num_classes,
+                average="weighted",
             ),
             "Precision": Precision(
-                task="multiclass", num_classes=config.num_classes, average="weighted"
+                task="multiclass",
+                num_classes=config.classifier.num_classes,
+                average="weighted",
             ),
             "Recall": Recall(
-                task="multiclass", num_classes=config.num_classes, average="weighted"
+                task="multiclass",
+                num_classes=config.classifier.num_classes,
+                average="weighted",
             ),
             "F1": F1Score(
-                task="multiclass", num_classes=config.num_classes, average="weighted"
+                task="multiclass",
+                num_classes=config.classifier.num_classes,
+                average="weighted",
             ),
         }
 
@@ -84,7 +93,7 @@ class Metrics:
     def compute(self):
         result = {}
         for name, metric in self.metrics.items():
-            result[name] = metric.compute()
+            result[name] = metric.compute().cpu().tolist()
         return result
 
 
@@ -92,17 +101,15 @@ app = typer.Typer()
 
 
 @app.command()
-def convert(
-    regressor_path: Path = typer.Option("--regressor"),
-    classifier_path: Path = typer.Option("--classifier"),
+def evaluate(
+    reg: Path = typer.Option("--reg"),
+    cl: Path = typer.Option("--cl"),
 ):
     config.init_checkpoint("metrics")
     metrics = Metrics()
 
     times = []
-    generator = InferenceGenerator(
-        regressor_path=regressor_path, classifier_path=classifier_path
-    )
+    generator = InferenceGenerator(regressor_path=reg, classifier_path=cl)
     for step in generator():
         metrics.update(preds=step.preds, targets=step.targets)
         times.append(step.time)
@@ -116,3 +123,7 @@ def convert(
 
     with open(config.checkpoint / "metrics.json", "w") as f:
         json.dump(computed, f, indent=4)
+
+
+if __name__ == "__main__":
+    app()

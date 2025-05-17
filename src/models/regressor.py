@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -116,23 +119,45 @@ class BlazePoseLite(nn.Module):
 
 
 class RegressorWrapper(torch.nn.Module):
-    def __init__(self, tflite_model_path):
+    def __init__(self, tflite_model_path: Path):
         import tensorflow as tf
 
         super().__init__()
-        self.interpreter = tf.lite.Interpreter(model_path=tflite_model_path)
+        self.interpreter = tf.lite.Interpreter(model_path=str(tflite_model_path))
         self.interpreter.allocate_tensors()
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Convert input to numpy
-        input_data = x.detach().cpu().numpy().astype(self.input_details[0]["dtype"])
+        # Convert input to numpy\
+        scale, zero_point = self.input_details[0]["quantization"]
 
+        input_data = x.detach().cpu().numpy()
+        input_data = input_data / scale + zero_point
+        input_data = np.clip(input_data, 0, 255).astype(self.input_details[0]["dtype"])
+
+        print("Input shape:", input_data.shape)
+        print("Input dtype:", input_data.dtype)
+        print("Input min/max:", input_data.min(), input_data.max())
+        print(
+            "Input has NaN or Inf:",
+            np.isnan(input_data).any(),
+            np.isinf(input_data).any(),
+        )
+        print("Expected input shape:", self.input_details[0]["shape"])
+        print("Input quantization:", self.input_details[0]["quantization"])
+        print("Output quantization:", self.output_details[0]["quantization"])
         # Set input tensor
         self.interpreter.set_tensor(self.input_details[0]["index"], input_data)
         self.interpreter.invoke()
 
         # Get output
         output_data = self.interpreter.get_tensor(self.output_details[0]["index"])
+        print("Output shape:", output_data.shape)
+        print("Output min/max:", output_data.min(), output_data.max())
+        print(
+            "Output has NaN or Inf:",
+            np.isnan(output_data).any(),
+            np.isinf(output_data).any(),
+        )
         return torch.from_numpy(output_data)

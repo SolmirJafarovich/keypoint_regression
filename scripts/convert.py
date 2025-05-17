@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Annotated
 
 import ai_edge_torch
 import torch
@@ -8,50 +9,75 @@ from ai_edge_torch.quantize.pt2e_quantizer import (
     get_symmetric_quantization_config,
 )
 from ai_edge_torch.quantize.quant_config import QuantConfig
-from model import BlazePoseLite
 from torch._export import capture_pre_autograd_graph
 from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
+
+from src.config import config, device
+from src.models import BlazePoseLite, CombinedClassifier
 
 app = typer.Typer()
 
 
 @app.command()
-def convert(checkpoint: Path = typer.Option("--checkpoint")):
-    # === Load model ===
-    model = BlazePoseLite()
-    model.load_state_dict(
-        torch.load(
-            checkpoint / "weights.pth",
-            map_location="cuda",
+def convert(
+    checkpoint: Path = typer.Option("--checkpoint"),
+    is_classifier: Annotated[bool, typer.Option("--is-classifier")] = False,
+):
+    # === Load and initialize model ===
+    if is_classifier:
+        model_fp32 = CombinedClassifier()
+        sample_input = (
+            torch.randn(1, 1, config.img_size, config.img_size),
+            torch.randn(1, 66),
         )
-    )
-    model.eval()
+    else:
+        model_fp32 = BlazePoseLite()
+        sample_input = (torch.randn(1, 1, config.img_size, config.img_size),)
 
-    sample_input = (torch.randn(64, 1, 224, 224),)
+    state_dict = torch.load(
+        checkpoint / "weights.pth", map_location=device, weights_only=True
+    )
+    model_fp32.load_state_dict(state_dict)
+    model_fp32.eval()
 
     # === Configure quantization ===
 
-    pt2e_quantizer = PT2EQuantizer().set_global(
-        get_symmetric_quantization_config(is_per_channel=True, is_dynamic=True)
+    quantizer = PT2EQuantizer().set_global(
+        get_symmetric_quantization_config(is_per_channel=False, is_dynamic=True)
     )
 
-    pt2e_torch_model = capture_pre_autograd_graph(model, sample_input)
-    pt2e_torch_model = prepare_pt2e(pt2e_torch_model, pt2e_quantizer)
+    # === Quantize ===
 
-    # Run the prepared model with sample input data to ensure that internal observers are populated with correct values
-    pt2e_torch_model(*sample_input)
+    model_fp32 = capture_pre_autograd_graph(model_fp32, sample_input)
+    model_fp32 = prepare_pt2e(model_fp32, quantizer)
 
-    # Convert the prepared model to a quantized model
-    pt2e_torch_model = convert_pt2e(pt2e_torch_model, fold_quantize=False)
+    # TODO calibration
+
+    model_i8 = convert_pt2e(model_fp32, fold_quantize=False)
 
     # === Convert to an ai_edge_torch model ===
-    pt2e_drq_model = ai_edge_torch.convert(
-        pt2e_torch_model,
-        sample_input,
-        quant_config=QuantConfig(pt2e_quantizer=pt2e_quantizer),
+    tflite_model = ai_edge_torch.convert(
+        module=model_i8,
+        sample_args=sample_input,
+        quant_config=QuantConfig(pt2e_quantizer=quantizer),
     )
 
+    # === Test the model ===
+
+    # Run the prepared model with sample input data to ensure that internal observers are populated with correct values
+    pytorch_output = model_fp32(*sample_input)
+    tflite_output = tflite_model(*sample_input)
+
+    print("PyTorch output:", pytorch_output)
+    print("TFLite output:", tflite_output)
+
+    # === Save the model ===
+
     tflite_path = checkpoint / "weights.tflite"
-    pt2e_drq_model.export(tflite_path)
+    tflite_model.export(tflite_path)
 
     typer.echo(f"Готово! Модель сохранена как: {tflite_path}")
+
+
+if __name__ == "__main__":
+    app()
