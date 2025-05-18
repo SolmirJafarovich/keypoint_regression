@@ -136,28 +136,10 @@ class RegressorWrapper(torch.nn.Module):
         input_data = input_data / scale + zero_point
         input_data = np.clip(input_data, 0, 255).astype(self.input_details[0]["dtype"])
 
-        print("Input shape:", input_data.shape)
-        print("Input dtype:", input_data.dtype)
-        print("Input min/max:", input_data.min(), input_data.max())
-        print(
-            "Input has NaN or Inf:",
-            np.isnan(input_data).any(),
-            np.isinf(input_data).any(),
-        )
-        print("Expected input shape:", self.input_details[0]["shape"])
-        print("Input quantization:", self.input_details[0]["quantization"])
-        print("Output quantization:", self.output_details[0]["quantization"])
         # Set input tensor
         self.interpreter.set_tensor(self.input_details[0]["index"], input_data)
         self.interpreter.invoke()
 
         # Get output
         output_data = self.interpreter.get_tensor(self.output_details[0]["index"])
-        print("Output shape:", output_data.shape)
-        print("Output min/max:", output_data.min(), output_data.max())
-        print(
-            "Output has NaN or Inf:",
-            np.isnan(output_data).any(),
-            np.isinf(output_data).any(),
-        )
         return torch.from_numpy(output_data)

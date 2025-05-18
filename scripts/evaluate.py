@@ -2,7 +2,7 @@ import json
 import time
 from pathlib import Path
 from statistics import mean
-
+from typing import Annotated
 import torch
 import typer
 from pydantic import BaseModel, ConfigDict
@@ -11,8 +11,10 @@ from torchmetrics import Accuracy, F1Score, Precision, Recall
 
 from src.config import config, device
 from src.dataset import KeypointPrecomputedDataset
-from src.models import ClassifierWrapper, RegressorWrapper
+from src.models import ClassifierWrapper, RegressorWrapper, BlazePoseLite, CombinedClassifier
 from src.utils import soft_argmax_2d
+
+from rich.progress import track
 
 app = typer.Typer()
 
@@ -25,13 +27,49 @@ class InferenceStep(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+class PytorchInferenceGenerator:
+    def __init__(self, regressor_path: Path, classifier_path: Path):
+        self.regressor = BlazePoseLite()
+        state_dict = torch.load(regressor_path / "weights.pth", weights_only=True)
+        self.regressor.load_state_dict(state_dict)
+        
+        self.classifier = CombinedClassifier()
+        state_dict = torch.load(classifier_path / "weights.pth", weights_only=True)
+        self.classifier.load_state_dict(state_dict)
+        
+        self.regressor.eval()
+        self.classifier.eval()
+
+        self.dataset = KeypointPrecomputedDataset()
+
+        self.loader = DataLoader(
+            self.dataset,
+            batch_size=1,
+            shuffle=True,
+        )
+
+    def __call__(self) -> InferenceStep:
+        with torch.no_grad():
+            for images, targets in self.loader:
+                _start_time = time.perf_counter()
+        
+                heatmaps = self .regressor(images)
+                keypoints = soft_argmax_2d(heatmaps)
+                keypoints = keypoints.view(keypoints.shape[0], -1)
+        
+                _end_time = time.perf_counter()
+                preds = self.classifier(images, keypoints)
+                
+                yield InferenceStep(preds=preds, targets=targets, time=_end_time - _start_time)
+
+
 class InferenceGenerator:
     def __init__(self, regressor_path: Path, classifier_path: Path):
         self.regressor = (
-            RegressorWrapper(regressor_path / "weights.tflite").eval().to(device)
+            RegressorWrapper(regressor_path / "weights_quant.tflite").eval().to(device)
         )
         self.classifier = (
-            ClassifierWrapper(classifier_path / "weights.tflite").eval().to(device)
+            ClassifierWrapper(classifier_path / "weights_quant.tflite").eval().to(device)
         )
 
         self.dataset = KeypointPrecomputedDataset()
@@ -42,23 +80,22 @@ class InferenceGenerator:
             shuffle=True,
         )
 
-    def step(self) -> InferenceStep:
-        images, targets = next(iter(self.loader))
-
-        _start_time = time.perf_counter()
-
-        heatmaps = self.regressor(images)
-        keypoints = soft_argmax_2d(heatmaps)
-
-        _end_time = time.perf_counter()
-
-        preds = self.classifier(images, keypoints)
-
-        return InferenceStep(preds=preds, targets=targets, time=_end_time - _start_time)
-
-    def __call__(self):
+    def __call__(self) -> InferenceStep:
         with torch.no_grad():
-            yield self.step()
+            for images, targets in self.loader:
+                _start_time = time.perf_counter()
+        
+                heatmaps = self.regressor(images)
+                keypoints = soft_argmax_2d(heatmaps)
+                keypoints = (keypoints * 255).to(torch.uint8)
+        
+                _end_time = time.perf_counter()
+        
+                preds = self.classifier(images, keypoints)
+        
+                preds = (preds / 255).to(torch.float)
+        
+                yield InferenceStep(preds=preds, targets=targets, time=_end_time - _start_time)
 
 
 class Metrics:
@@ -104,13 +141,18 @@ app = typer.Typer()
 def evaluate(
     reg: Path = typer.Option("--reg"),
     cl: Path = typer.Option("--cl"),
+    pytorch: Annotated[bool, typer.Option("--pytorch")] = False,
 ):
     config.init_checkpoint("metrics")
     metrics = Metrics()
 
     times = []
-    generator = InferenceGenerator(regressor_path=reg, classifier_path=cl)
-    for step in generator():
+    if pytorch:
+        generator = PytorchInferenceGenerator(regressor_path=reg, classifier_path=cl)
+    else:
+        generator = InferenceGenerator(regressor_path=reg, classifier_path=cl)
+        
+    for step in track(generator(), description="Evaluating"):
         metrics.update(preds=step.preds, targets=step.targets)
         times.append(step.time)
 

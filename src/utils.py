@@ -156,6 +156,7 @@ def visualize_keypoints_with_heatmaps(
 
 
 def soft_argmax_2d(heatmaps):
+    heatmaps = heatmaps.float()
     B, C, H, W = heatmaps.shape
     flat = heatmaps.view(B, C, -1)
     probs = F.softmax(flat, dim=2)

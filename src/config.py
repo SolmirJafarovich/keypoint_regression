@@ -38,7 +38,7 @@ class Config(BaseModel):
 
     # === Eval settings ===
     eval_dataset: Path = Path(
-        "/home/syrenny/Desktop/clones/keypoint_regression/data/raw/test"
+        "/home/student/work/new_project/data/raw/test"
     )
 
 

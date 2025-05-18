@@ -135,27 +135,19 @@ class KeypointPrecomputedDataset(Dataset):
         )
         self._prepare_samples()
 
-    def _prepare_samples(self):
-        for class_name in config.eval_dataset.iterdir():
-            class_path = config.eval_dataset / class_name
+    def _prepare_samples(self):        
+        for class_path in config.eval_dataset.iterdir():
             if not class_path.is_dir():
                 continue
+            label = self.class_to_label[class_path.name]
 
-            class_name = class_path.name
-            if class_name not in self.class_to_label:
-                continue
-
-            label = self.class_to_label[class_name]
-
-            for fname in os.listdir(class_path):
-                if not fname.lower().endswith((".png", ".jpg")):
-                    continue
-
-                full_path = class_path / fname
-                image = Image.open(full_path).convert("L")
-                image_tensor = self.transform(image).to(device)
-
-                self.samples.append((image_tensor, label))
+            for ext in ("*.jpg", "*.png"):
+                for fname in class_path.glob(ext):
+                    full_path = class_path / fname
+                    image = Image.open(full_path).convert("L")
+                    image_tensor = self.transform(image)
+    
+                    self.samples.append((image_tensor, label))
 
     def __len__(self):
         return len(self.samples)

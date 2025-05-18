@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 from torchvision.models import mobilenet_v2
@@ -45,15 +47,14 @@ class ClassifierWrapper(torch.nn.Module):
         assert len(self.input_details) == 2, "Expected 2 inputs: image and keypoints"
 
         # Cache input indices for clarity
-        self.input_index_img = self.input_details[0]["index"]
-        self.input_index_kps = self.input_details[1]["index"]
+        self.input_index_img = self.input_details[1]["index"]
+        self.input_index_kps = self.input_details[0]["index"]
 
     def forward(self, img: torch.Tensor, kps: torch.Tensor) -> torch.Tensor:
         # Convert input to numpy
         img_np = img.detach().cpu().numpy().astype(self.input_details[0]["dtype"])
         kps_np = kps.detach().cpu().numpy().astype(self.input_details[1]["dtype"])
         kps_np = kps_np.reshape(1, -1)
-
 
         # Set input tensors
         self.interpreter.set_tensor(self.input_index_img, img_np)

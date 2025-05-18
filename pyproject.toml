@@ -17,6 +17,7 @@ dependencies = [
     "opencv-python",
     "pandas",
     "matplotlib",
+    "torchmetrics>=1.7.1",
 ]
 [tool.uv.sources]
 onnx-tf = { path = "./onnx-tensorflow" }
