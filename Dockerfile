@@ -10,12 +10,6 @@ EXPOSE 8888
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     curl gnupg git vim python3-pip wget usbutils && \
-    apt-get clean
-
-# Устанавливаем OpenCV и его зависимости
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    python3-opencv libopencv-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -25,16 +19,11 @@ RUN echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" |
 
 # Обновляем список пакетов и устанавливаем libedgetpu1-std и python3-pycoral
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y libedgetpu1-std python3-pycoral && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pycoral libedgetpu1-std python3-tflite-runtime && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # USB Acceleration setup guide
-RUN mkdir coral && cd coral
-RUN git clone https://github.com/google-coral/pycoral.git
-RUN cd pycoral && bash examples/install_requirements.sh classify_image.py
-
-
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    xvfb
+RUN git clone https://github.com/google-coral/pycoral && \
+    cd pycoral && \
+    bash examples/install_requirements.sh classify_image.py

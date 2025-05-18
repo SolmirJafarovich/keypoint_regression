@@ -20,4 +20,4 @@ dependencies = [
     "torchmetrics>=1.7.1",
 ]
 [tool.uv.sources]
-onnx-tf = { path = "./onnx-tensorflow" }
+onnx-tf = { git = "https://github.com/onnx/onnx-tensorflow.git", rev = "e2a8a71d0ab1788b3d0ceffe1aa13856e56b8065" }
