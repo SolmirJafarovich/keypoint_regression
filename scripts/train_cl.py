@@ -1,97 +1,97 @@
 import os
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+import numpy as np
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Subset
-from torchvision import transforms
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import tensorflow as tf
+from tensorflow.keras.callbacks import Callback
 from tqdm import tqdm
 
-from src.config import config, device
-from src.dataset import CachedPoseDataset
-from src.models import CombinedClassifier
+from src.config import config
+from src.dataset_cl import KeypointPrecomputedDatasetTF
+from src.models import build_combined_classifier
 
-# Настройка
-transform = transforms.Compose(
-    [transforms.Resize((config.img_size, config.img_size)), transforms.ToTensor()]
-)
-
-# Датасеты и загрузчики
-dataset = CachedPoseDataset("cached_keypoints1_flattened.json", transform=transform)
-train_idx, val_idx = train_test_split(
-    list(range(len(dataset))), test_size=0.3, random_state=42
-)
-train_loader = DataLoader(Subset(dataset, train_idx), batch_size=64, shuffle=True)
-val_loader = DataLoader(Subset(dataset, val_idx), batch_size=64)
-config.init_checkpoint("classifier")
-
-# Модель, оптимизатор, лосс
-model = CombinedClassifier().to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
-criterion = nn.CrossEntropyLoss()
-
-# --- Классы ---
-class_to_label = {"Belly": 0, "Back": 1, "Right_side": 2, "Left_side": 3}
-
-# --- Путь к данным (эмулируем структуру папок) ---
-root_dir = "depth"
-
-# Инициализация параметров сохранения
-best_acc = 0.0
-output_image_dir = "output"
-
-# Тренировка и валидация
+# Параметры
+img_size = config.img_size
+batch_size = 64
 num_epochs = 20
-for epoch in range(num_epochs):
-    model.train()
+output_dir = "./data/classifier_tf/output"
+os.makedirs(output_dir, exist_ok=True)
 
-    for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} - Training"):
-        images = batch["image"].to(device)
+# Загрузка датасета
+dataset = KeypointPrecomputedDatasetTF(
+    root_dir="../depth",
+    keypoint_file="./data/raw/cached_keypoints1_flattened.json",
+    img_size=config.img_size
+)
 
-        keypoints = batch["keypoints"].to(device)
-        # print("Keypoints shape:", batch["keypoints"].shape)  # Должно быть (batch_size, 66)
 
-        labels = batch["label"].to(device)
+# Разделение вручную (если хочешь контролировать баланс классов, перемешивание и т.п.)
+samples = dataset.samples
 
-        outputs = model(images, keypoints)
+print(f"[DEBUG] Кол-во samples: {len(samples)}")
+print(f"[DEBUG] Пример: {samples[:1]}")
 
-        loss = criterion(outputs, labels)
+np.random.seed(42)
+np.random.shuffle(samples)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+split_index = int(0.7 * len(samples))
+train_samples = samples[:split_index]
+val_samples = samples[split_index:]
 
-    model.eval()
-    preds, targets = [], []
+# Создание tf.data.Dataset
+train_ds = dataset.get_tf_dataset_from_samples(train_samples, batch_size=64, shuffle=True)
+val_ds = dataset.get_tf_dataset_from_samples(val_samples, batch_size=64, shuffle=False)
 
-    with torch.no_grad():
-        for batch in tqdm(
-            val_loader, desc=f"Epoch {epoch + 1}/{num_epochs} - Validation"
-        ):
-            images = batch["image"].to(device)
-            keypoints = batch["keypoints"].to(device)
-            labels = batch["label"].to(device)
+# Получим размерность координат ключевых точек
+keypoint_dim = len(train_samples[0][1])  # [img_path, keypoints, label]
 
-            predictions = model(images, keypoints).argmax(dim=1).cpu()
-            preds += predictions.tolist()
-            targets += labels.cpu().tolist()
+# Создание модели
+model = build_combined_classifier(
+    input_shape_img=(img_size, img_size, 1),
+    keypoint_dim=keypoint_dim,
+    num_classes=4,
+)
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-3),
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+    metrics=["accuracy"]
+)
 
-    acc = accuracy_score(targets, preds)
-    prec = precision_score(targets, preds, average="weighted", zero_division=0)
-    rec = recall_score(targets, preds, average="weighted", zero_division=0)
-    f1 = f1_score(targets, preds, average="weighted", zero_division=0)
+# Кастомный callback для оценки F1, precision, recall
+class MetricsCallback(Callback):
+    def __init__(self, val_ds):
+        super().__init__()
+        self.val_ds = val_ds
+        self.best_acc = 0.0
 
-    if acc > best_acc:
-        os.makedirs(output_image_dir, exist_ok=True)
-        best_acc = acc
-        torch.save(
-            model.state_dict(), os.path.join(output_image_dir, "best_classifier.pth")
-        )
-        print(f"✅ Saved best model by accuracy ({best_acc:.2f})")
+def on_epoch_end(self, epoch, logs=None):
+        y_true = []
+        y_pred = []
 
-    print(f"\nEpoch {epoch + 1}")
-    print(
-        f"Accuracy: {acc:.4f} | Precision: {prec:.4f} | Recall: {rec:.4f} | F1: {f1:.4f}"
-    )
+        for (img_batch, kp_batch), y_batch in self.val_ds:
+            preds = self.model.predict_on_batch([img_batch, kp_batch])
+            y_pred.extend(np.argmax(preds, axis=1))
+            y_true.extend(y_batch.numpy())
+
+        acc = accuracy_score(y_true, y_pred)
+        prec = precision_score(y_true, y_pred, average="weighted", zero_division=0)
+        rec = recall_score(y_true, y_pred, average="weighted", zero_division=0)
+        f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+
+        print(f"\nEpoch {epoch+1}")
+        print(f"Accuracy: {acc:.4f} | Precision: {prec:.4f} | Recall: {rec:.4f} | F1: {f1:.4f}")
+
+        if acc > self.best_acc:
+            self.best_acc = acc
+            self.model.save(os.path.join(output_dir, "best_classifier.h5"))
+            print(f"✅ Saved best model by accuracy ({self.best_acc:.2f})")
+
+
+# Обучение
+model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=num_epochs,
+    callbacks=[MetricsCallback(val_ds)],
+    verbose=0  # можно заменить на tqdm отдельно
+)

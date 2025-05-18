@@ -1,66 +1,28 @@
-from pathlib import Path
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import MobileNetV2
 
-import numpy as np
+def build_combined_classifier(input_shape_img=(224, 224, 1), keypoint_dim=66, num_classes=4):
+    # Вход изображения
+    image_input = layers.Input(shape=input_shape_img, name="image_input")
 
-import torch
-import torch.nn as nn
-from torchvision.models import mobilenet_v2
+    # Подключаем MobileNetV2 с входом (224, 224, 3), так как веса и структура завязаны на это
+    base_model = MobileNetV2(input_shape=(224, 224, 3), include_top=False, weights=None)
 
-from src.config import config
+    # Поднимаем grayscale в RGB, дублируя канал 3 раза
+    x = layers.Concatenate()([image_input, image_input, image_input])  # (H, W, 1) -> (H, W, 3)
 
+    x = base_model(x, training=False)
+    x = layers.GlobalAveragePooling2D()(x)
 
-class CombinedClassifier(nn.Module):
-    def __init__(self, keypoint_dim=66):
-        super().__init__()
-        base = mobilenet_v2(pretrained=False)
-        base.features[0][0] = nn.Conv2d(
-            1, 32, kernel_size=3, stride=2, padding=1, bias=False
-        )
-        self.features = base.features
-        self.image_pool = nn.AdaptiveAvgPool2d(1)
-        self.keypoint_proj = nn.Linear(keypoint_dim, 64)
-        self.classifier = nn.Sequential(
-            nn.Linear(base.last_channel + 64, 128),
-            nn.ReLU(),
-            nn.Linear(128, config.classifier.num_classes),
-        )
+    # Вход для ключевых точек
+    kps_input = layers.Input(shape=(keypoint_dim,), name="keypoints_input")
+    k = layers.Dense(64, activation=None)(kps_input)
 
-    def forward(self, img, kps):
-        x = self.features(img)
-        x = self.image_pool(x).view(x.size(0), -1)
-        k = self.keypoint_proj(kps)
-        combined = torch.cat([x, k], dim=1)
-        return self.classifier(combined)
+    # Объединение и классификация
+    combined = layers.Concatenate()([x, k])
+    combined = layers.Dense(128, activation="relu")(combined)
+    output = layers.Dense(num_classes, activation="softmax")(combined)
 
-
-class ClassifierWrapper(torch.nn.Module):
-    def __init__(self, tflite_model_path: Path):
-        import tensorflow as tf
-
-        super().__init__()
-        self.interpreter = tf.lite.Interpreter(model_path=str(tflite_model_path))
-        self.interpreter.allocate_tensors()
-        self.input_details = self.interpreter.get_input_details()
-        self.output_details = self.interpreter.get_output_details()
-
-        # Check input count
-        assert len(self.input_details) == 2, "Expected 2 inputs: image and keypoints"
-
-        # Cache input indices for clarity
-        self.input_index_img = self.input_details[1]["index"]
-        self.input_index_kps = self.input_details[0]["index"]
-
-    def forward(self, img: torch.Tensor, kps: torch.Tensor) -> torch.Tensor:
-        # Convert input to numpy
-        img_np = img.detach().cpu().numpy().astype(self.input_details[0]["dtype"])
-        kps_np = kps.detach().cpu().numpy().astype(self.input_details[1]["dtype"])
-        kps_np = kps_np.reshape(1, -1)
-
-        # Set input tensors
-        self.interpreter.set_tensor(self.input_index_img, img_np)
-        self.interpreter.set_tensor(self.input_index_kps, kps_np)
-        self.interpreter.invoke()
-
-        # Get output
-        output_data = self.interpreter.get_tensor(self.output_details[0]["index"])
-        return torch.from_numpy(output_data)
+    model = models.Model(inputs=[image_input, kps_input], outputs=output)
+    return model
