@@ -18,6 +18,7 @@ dependencies = [
     "tensorflow-probability==0.20.0",
     "tensorflow-addons==0.20.0",
     "tf_keras",
+    "tqdm>=4.67.1",
 ]
 
 [tool.uv.sources]
