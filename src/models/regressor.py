@@ -1,145 +1,101 @@
-from pathlib import Path
+import tensorflow as tf
+from tensorflow.keras import Model, layers
 
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from src.config import config
 
 
 # --- Depthwise Separable Convolution ---
-class DepthwiseSeparableConv(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        self.depthwise = nn.Conv2d(
-            in_channels,
-            in_channels,
-            3,
-            stride=stride,
-            padding=1,
-            groups=in_channels,
-            bias=False,
-        )
-        self.pointwise = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.act = nn.ReLU()
-
-    def forward(self, x):
-        x = self.depthwise(x)
-        x = self.pointwise(x)
-        x = self.bn(x)
-        return self.act(x)
+def DepthwiseSeparableConv(x, out_channels, stride=1):
+    x = layers.DepthwiseConv2D(
+        kernel_size=3, strides=stride, padding="same", use_bias=False
+    )(x)
+    x = layers.Conv2D(out_channels, kernel_size=1, use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    return layers.ReLU()(x)
 
 
 # --- Residual Block ---
-class ResidualBlock(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(),
-            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
-        )
-        self.act = nn.ReLU()
-
-    def forward(self, x):
-        return self.act(x + self.block(x))
+def ResidualBlock(x, channels):
+    shortcut = x
+    out = layers.Conv2D(channels, 3, padding="same", use_bias=False)(x)
+    out = layers.BatchNormalization()(out)
+    out = layers.ReLU()(out)
+    out = layers.Conv2D(channels, 3, padding="same", use_bias=False)(out)
+    out = layers.BatchNormalization()(out)
+    out = layers.Add()([shortcut, out])
+    return layers.ReLU()(out)
 
 
-# --- Main Model ---
-class BlazePoseLite(nn.Module):
-    def __init__(self, heatmap_size=64, num_keypoints=33):
-        super().__init__()
-        self.heatmap_size = heatmap_size
-        self.num_keypoints = num_keypoints
+# --- BlazePoseLite Model ---
+def build_blazepose_lite(
+    input_shape=(config.img_size, config.img_size, 1), heatmap_size=64, num_keypoints=33
+):
+    inputs = layers.Input(shape=input_shape)
 
-        # --- Encoder ---
-        self.enc1 = DepthwiseSeparableConv(1, 16, stride=2)  # 128 -> 64
-        self.enc2 = DepthwiseSeparableConv(16, 32, stride=2)  # 64 -> 32
-        self.enc3 = DepthwiseSeparableConv(32, 64, stride=2)  # 32 -> 16
-        self.enc4 = DepthwiseSeparableConv(64, 128, stride=2)  # 16 -> 8
-        self.enc5 = DepthwiseSeparableConv(128, 192, stride=2)  # 8 -> 4
+    # --- Encoder ---
+    e1 = DepthwiseSeparableConv(inputs, 16, stride=2)  # 128 -> 64
+    e2 = DepthwiseSeparableConv(e1, 32, stride=2)  # 64 -> 32
+    e3 = DepthwiseSeparableConv(e2, 64, stride=2)  # 32 -> 16
+    e4 = DepthwiseSeparableConv(e3, 128, stride=2)  # 16 -> 8
+    e5 = DepthwiseSeparableConv(e4, 192, stride=2)  # 8 -> 4
 
-        # --- Bottleneck ---
-        self.bottleneck = nn.Sequential(
-            ResidualBlock(192),
-            ResidualBlock(192),
-            ResidualBlock(192),
-        )
+    # --- Bottleneck ---
+    b = ResidualBlock(e5, 192)
+    b = ResidualBlock(b, 192)
+    b = ResidualBlock(b, 192)
 
-        # --- Decoder ---
-        self.up4 = nn.ConvTranspose2d(192 + 128, 128, kernel_size=2, stride=2)
-        self.up3 = nn.ConvTranspose2d(128 + 64, 64, kernel_size=2, stride=2)
-        self.up2 = nn.ConvTranspose2d(64 + 32, 32, kernel_size=2, stride=2)
-        self.up1 = nn.ConvTranspose2d(32 + 16, 32, kernel_size=2, stride=2)
+    # --- Decoder ---
+    b_up = layers.Lambda(
+        lambda x: tf.image.resize(x[0], tf.shape(x[1])[1:3], method="bilinear")
+    )([b, e4])
+    d4 = layers.Concatenate()([b_up, e4])
+    d4 = layers.Conv2DTranspose(128, 2, strides=2)(d4)  # 4 -> 8
 
-        # --- Heatmap Head ---
-        self.heatmap_out = nn.Conv2d(32, num_keypoints, kernel_size=1)
+    d3 = layers.Concatenate()([d4, e3])
+    d3 = layers.Conv2DTranspose(64, 2, strides=2)(d3)  # 8 -> 16
 
-    def forward(self, x):
-        e1 = self.enc1(x)  # [B, 16, 64, 64]
-        e2 = self.enc2(e1)  # [B, 32, 32, 32]
-        e3 = self.enc3(e2)  # [B, 64, 16, 16]
-        e4 = self.enc4(e3)  # [B, 128, 8, 8]
-        e5 = self.enc5(e4)  # [B, 192, 4, 4]
+    d2 = layers.Concatenate()([d3, e2])
+    d2 = layers.Conv2DTranspose(32, 2, strides=2)(d2)  # 16 -> 32
 
-        b = self.bottleneck(e5)
+    d1 = layers.Concatenate()([d2, e1])
+    d1 = layers.Conv2DTranspose(32, 2, strides=2)(d1)  # 32 -> 64
 
-        b_up = F.interpolate(b, size=e4.shape[2:], mode="bilinear", align_corners=False)
-        d4 = self.up4(torch.cat([b_up, e4], dim=1))  # 4 -> 8
-        d3 = self.up3(torch.cat([d4, e3], dim=1))  # 8 -> 16
-        d2 = self.up2(torch.cat([d3, e2], dim=1))  # 16 -> 32
-        d1 = self.up1(torch.cat([d2, e1], dim=1))  # 32 -> 64
+    # --- Heatmap Output ---
+    heatmaps = layers.Conv2D(num_keypoints, kernel_size=1)(d1)
+    heatmaps = layers.Lambda(
+        lambda x: tf.image.resize(x, (heatmap_size, heatmap_size), method="bilinear")
+    )(heatmaps)
 
-        # heatmaps = self.heatmap_out(d1)  # [B, K, 64, 64]
-        # heatmaps = 10 * heatmaps  # масштабирование логитов
+    # Контрастность
+    heatmaps = layers.Lambda(lambda x: 15 * x)(heatmaps)
 
-        logits = self.heatmap_out(d1)
-        heatmaps = logits  # усиливаем контраст логитов
-
-        # Softmax по пространству
-        # B, K, H, W = heatmaps.shape
-        # heatmaps = F.softmax(heatmaps.view(B, K, -1), dim=-1).view(B, K, H, W)
-
-        # heatmaps = self.heatmap_out(d1)
-        heatmaps = F.interpolate(
-            heatmaps,
-            size=(self.heatmap_size, self.heatmap_size),
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        heatmaps = 15 * heatmaps  # усиление контраста (проверено)
-
-        # Softmax по пространству
-        # B, K, H, W = heatmaps.shape
-        # heatmaps = F.softmax(heatmaps.view(B, K, -1), dim=-1).view(B, K, H, W)
-        return heatmaps
+    return Model(inputs=inputs, outputs=heatmaps)
 
 
-class RegressorWrapper(torch.nn.Module):
-    def __init__(self, tflite_model_path: Path):
-        import tensorflow as tf
+def soft_argmax_2d(heatmaps):
+    shape = tf.shape(heatmaps)
+    batch_size, height, width, num_kpoints = shape[0], shape[1], shape[2], shape[3]
 
-        super().__init__()
-        self.interpreter = tf.lite.Interpreter(model_path=str(tflite_model_path))
-        self.interpreter.allocate_tensors()
-        self.input_details = self.interpreter.get_input_details()
-        self.output_details = self.interpreter.get_output_details()
+    # reshape heatmaps to [B, H*W, K]
+    heatmaps_reshaped = tf.nn.softmax(
+        tf.reshape(heatmaps, [batch_size, height * width, num_kpoints]),
+        axis=1,
+    )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Convert input to numpy\
-        scale, zero_point = self.input_details[0]["quantization"]
+    # create coordinate grids
+    pos_x, pos_y = tf.meshgrid(
+        tf.linspace(0.0, 1.0, width), tf.linspace(0.0, 1.0, height)
+    )
+    pos_x = tf.reshape(pos_x, [-1])  # [H*W]
+    pos_y = tf.reshape(pos_y, [-1])  # [H*W]
 
-        input_data = x.detach().cpu().numpy()
-        input_data = input_data / scale + zero_point
-        input_data = np.clip(input_data, 0, 255).astype(self.input_details[0]["dtype"])
+    # expand dims for broadcasting
+    pos_x = pos_x[None, :, None]  # [1, H*W, 1]
+    pos_y = pos_y[None, :, None]  # [1, H*W, 1]
 
-        # Set input tensor
-        self.interpreter.set_tensor(self.input_details[0]["index"], input_data)
-        self.interpreter.invoke()
+    # weighted sum to get expected coordinates
+    exp_x = tf.reduce_sum(heatmaps_reshaped * pos_x, axis=1)  # [B, K]
+    exp_y = tf.reduce_sum(heatmaps_reshaped * pos_y, axis=1)  # [B, K]
 
-        # Get output
-        output_data = self.interpreter.get_tensor(self.output_details[0]["index"])
-        return torch.from_numpy(output_data)
+    coords = tf.stack([exp_x, exp_y], axis=-1)  # [B, K, 2]
+    return coords

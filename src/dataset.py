@@ -1,156 +1,115 @@
-import json
 import os
-from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
-import torch
+import tensorflow as tf
 from PIL import Image
-from torch.utils.data import Dataset
-from torchvision import transforms
 
-from src.config import config, device
-from src.utils import soft_argmax_2d
+from src.config import config
 
 
-class DepthKeypointDataset(Dataset):
-    def __init__(
-        self,
-        transform=None,
-        limb_connections=None,
-        visualize=False,
-        output_dir=None,
-    ):
-        """
-        Args:
-            csv_file (str): путь к CSV-файлу с координатами ключевых точек.
-            img_dir (str): директория с изображениями.
-            transform (callable, optional): трансформация изображений.
-            limb_connections (list of tuple, optional): соединения для отрисовки скелета.
-            visualize (bool): если True, сохраняет изображения с наложенным скелетом.
-            output_dir (str): директория для сохранения визуализаций.
-        """
-        self.data = pd.read_csv(config.regressor.csv_file)
-        self.transform = transform
-        self.limb_connections = limb_connections
-        self.visualize = visualize
-        self.output_dir = output_dir
-
-        if self.visualize and self.output_dir:
-            os.makedirs(self.output_dir, exist_ok=True)
+class DepthKeypointDataset:
+    def __init__(self, data: pd.DataFrame):
+        # Load csv with filenames and keypoints
+        self.data = data
 
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
-        # Загрузка изображения
-        img_path = config.regressor.img_dir / str(self.data.iloc[idx, 0])
-        image = Image.open(img_path).convert(
-            "L"
-        )  # глубинные изображения — одноканальные
+    def generator(self):
+        for idx in range(len(self.data)):
+            # Load image and resize to 224x224 grayscale
+            img_path = config.regressor.img_dir / str(self.data.iloc[idx, 0])
+            image = (
+                Image.open(img_path)
+                .convert("L")
+                .resize((config.img_size, config.img_size))
+            )
+            image_np = np.array(image, dtype=np.float32) / 255.0
+            image_np = np.expand_dims(image_np, axis=-1)  # shape: (224, 224, 1)
 
-        # Получение координат ключевых точек
-        raw = self.data.iloc[idx, 1:].values.astype(
-            np.float32
-        )  # [33*4 = 132] значений: x, y, z, v, ...
-        keypoints = raw.reshape(33, 4)[:, :2]  # Берём только x и y → shape: (33, 2)
+            # Load keypoints: 33 ключевые точки, берем только x и y (первые 2)
+            raw_keypoints = self.data.iloc[idx, 1:].values.astype(np.float32)
+            keypoints = raw_keypoints.reshape(33, 4)[:, :2]
 
-        img_width, img_height = 224, 224  # Явно указываем размер
-        keypoints[:, 0] *= img_width
-        keypoints[:, 1] *= img_height
+            keypoints[:, 0] *= config.img_size
+            keypoints[:, 1] *= config.img_size
 
-        # Преобразования
-        if self.transform:
-            image = self.transform(image)
+            # Генерируем тепловые карты (heatmaps) размером 64x64 для каждого ключевого пункта
+            heatmaps = self.generate_heatmaps(keypoints, (64, 64), sigma=7.5)
 
-        # Генерация тепловых карт
-        heatmaps = self.generate_heatmaps(keypoints, (64, 64), sigma=7.5)
+            yield image_np, keypoints, heatmaps
 
-        return {"image": image, "keypoints": keypoints, "heatmaps": heatmaps}
+    def get_dataset(self, batch_size=32, shuffle=True):
+        output_signature = (
+            tf.TensorSpec(shape=(224, 224, 1), dtype=tf.float32),
+            tf.TensorSpec(shape=(33, 2), dtype=tf.float32),
+            tf.TensorSpec(shape=(33, 64, 64), dtype=tf.float32),
+        )
+        dataset = tf.data.Dataset.from_generator(
+            self.generator, output_signature=output_signature
+        )
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(self.data))
+        dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        return dataset
 
-    def generate_heatmaps(self, keypoints, image_shape, sigma=1.5):
-        """Создаёт гауссовы тепловые карты для каждого ключа"""
-        h, w = image_shape
+    def generate_heatmaps(self, keypoints, shape, sigma=7.5):
+        h, w = shape
         num_keypoints = keypoints.shape[0]
         heatmaps = np.zeros((num_keypoints, h, w), dtype=np.float32)
 
-        # Масштабируем координаты из 224x224 в 64x64
-        scale_x = w / 224.0
-        scale_y = h / 224.0
+        # Precompute meshgrid once
+        xv, yv = np.meshgrid(np.arange(w), np.arange(h))
+
+        scale_x = w / config.img_size
+        scale_y = h / config.img_size
 
         for i, (x, y) in enumerate(keypoints):
             if x < 0 or y < 0:
                 continue
 
-            # Масштабирование координат
             x_scaled = x * scale_x
             y_scaled = y * scale_y
 
-            xv, yv = np.meshgrid(np.arange(w), np.arange(h))
+            # Gaussian heatmap
             heatmaps[i] = np.exp(
                 -((xv - x_scaled) ** 2 + (yv - y_scaled) ** 2) / (2 * sigma**2)
             )
 
-        return torch.tensor(heatmaps, dtype=torch.float32)
-
-    def save_visualization(self, image_tensor, keypoints, idx):
-        """Сохраняет изображение с наложенными ключевыми точками и соединениями"""
-        image_np = image_tensor.squeeze().numpy() * 255
-        image_np = np.clip(image_np, 0, 255).astype(np.uint8)
-        image_color = cv2.cvtColor(image_np, cv2.COLOR_GRAY2BGR)
-
-        # Отрисовка ключевых точек
-        for x, y in keypoints:
-            if x >= 0 and y >= 0:
-                cv2.circle(image_color, (int(x), int(y)), 2, (0, 255, 0), -1)
-
-        # Отрисовка соединений
-        if self.limb_connections:
-            for i, j in self.limb_connections:
-                x1, y1 = keypoints[i]
-                x2, y2 = keypoints[j]
-                if min(x1, y1, x2, y2) >= 0:
-                    cv2.line(
-                        image_color,
-                        (int(x1), int(y1)),
-                        (int(x2), int(y2)),
-                        (0, 0, 255),
-                        1,
-                    )
-
-        save_path = os.path.join(self.output_dir, f"sample_{idx}.png")
-        cv2.imwrite(save_path, image_color)
+        return heatmaps.astype(np.float32)
 
 
-class KeypointPrecomputedDataset(Dataset):
+class KeypointPrecomputedDataset:
     def __init__(self):
         self.class_to_label = {"Belly": 0, "Back": 1, "Right_side": 2, "Left_side": 3}
         self.samples = []
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize((config.img_size, config.img_size)),
-                transforms.ToTensor(),
-            ]
-        )
         self._prepare_samples()
 
-    def _prepare_samples(self):        
+    def _prepare_samples(self):
         for class_path in config.eval_dataset.iterdir():
             if not class_path.is_dir():
                 continue
-            label = self.class_to_label[class_path.name]
 
+            label = self.class_to_label[class_path.name]
             for ext in ("*.jpg", "*.png"):
                 for fname in class_path.glob(ext):
-                    full_path = class_path / fname
-                    image = Image.open(full_path).convert("L")
-                    image_tensor = self.transform(image)
-    
-                    self.samples.append((image_tensor, label))
+                    image = (
+                        Image.open(fname)
+                        .convert("L")
+                        .resize((config.img_size, config.img_size))
+                    )
+                    image_np = np.array(image, dtype=np.float32) / 255.0
+                    image_np = np.expand_dims(image_np, axis=-1)  # shape: (H, W, 1)
+                    self.samples.append((image_np, label))
 
-    def __len__(self):
-        return len(self.samples)
+    def generator(self):
+        for image_np, label in self.samples:
+            yield image_np, label
 
-    def __getitem__(self, idx):
-        return self.samples[idx]
+    def get_dataset(self):
+        output_types = (tf.float32, tf.int32)
+        output_shapes = ((config.img_size, config.img_size, 1), ())
+        return tf.data.Dataset.from_generator(
+            self.generator, output_types, output_shapes
+        )

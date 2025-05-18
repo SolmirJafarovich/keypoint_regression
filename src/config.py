@@ -2,13 +2,13 @@ import random
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-import torch
+
 from pydantic import BaseModel
 
 
 class RegressorConfig(BaseModel):
-    csv_file: Path = Path("/home/student/work/filtered_train.csv")
-    img_dir: Path = Path("/home/student/work/train/")
+    csv_file: Path = Path("./data/raw/subset/subset.csv")
+    img_dir: Path = Path("./data/raw/subset/images")
 
     heatmap_size: int = 64
 
@@ -37,13 +37,9 @@ class Config(BaseModel):
     regressor: RegressorConfig = RegressorConfig()
 
     # === Eval settings ===
-    eval_dataset: Path = Path(
-        "/home/student/work/new_project/data/raw/test"
-    )
+    eval_dataset: Path = Path("./data/raw/test")
 
 
-torch.manual_seed(42)
 random.seed(42)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 config = Config()
