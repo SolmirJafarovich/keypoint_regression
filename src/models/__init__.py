@@ -1,9 +1,3 @@
-from .classifier import ClassifierWrapper, CombinedClassifier
-from .regressor import BlazePoseLite, RegressorWrapper
+from .regressor import build_blazepose_lite, soft_argmax_2d
 
-__all__ = [
-    "ClassifierWrapper",
-    "RegressorWrapper",
-    "BlazePoseLite",
-    "CombinedClassifier",
-]
+__all__ = ["build_blazepose_lite", "soft_argmax_2d"]

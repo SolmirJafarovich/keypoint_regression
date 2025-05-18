@@ -1,251 +1,143 @@
-import os
-from datetime import datetime
-
+import matplotlib.pyplot as plt
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from model import BlazePoseLite, soft_argmax_2d
+import pandas as pd
+import tensorflow as tf
+from rich.console import Console
+from rich.live import Live
+from rich.text import Text
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Subset
-from torchvision import transforms
-from tqdm import tqdm
 
-from dataset import DepthKeypointDataset
 from src.config import config
-from utils import visualize_keypoints_with_heatmaps
+from src.dataset import DepthKeypointDataset
+from src.models.regressor import build_blazepose_lite, soft_argmax_2d
+from src.utils import visualize
+
+console = Console()
 
 
-def compute_losses(
-    heatmaps,
-    target_coords,
-    target_heatmaps,
-    alpha=0.1,  # вес для heatmap loss
-    beta=10.0,  # вес для координат из soft-argmax
+def compute_losses_tf(
+    pred_heatmaps, target_coords, target_heatmaps, alpha=0.1, beta=10.0
 ):
-    """
-    heatmap_coords: [B, K, 2] - из soft-argmax (в heatmap scale)
-    regressed_coords: [B, K, 2] - из прямого регресса (в image scale)
-    heatmaps: [B, K, H, W] - предсказанные тепловые карты
-    target_coords: [B, K, 2] - ground truth координаты (в image scale)
-    target_heatmaps: [B, K, H, W] - ground truth тепловые карты
-    """
-
-    heatmap_coords = soft_argmax_2d(heatmaps=heatmaps)
-
-    # Приводим все координаты к одному масштабу
+    target_heatmaps = tf.transpose(target_heatmaps, perm=[0, 2, 3, 1])
+    heatmap_coords = soft_argmax_2d(pred_heatmaps)
     heatmap_coords_norm = heatmap_coords / config.regressor.heatmap_size
     target_coords_norm = target_coords / config.img_size
 
-    # --- Loss тепловых карт ---
-    # heatmaps = torch.sigmoid(heatmaps)  # приведение в [0,1]
-    # compute_losses:
-    heatmaps = torch.sigmoid(heatmaps)
-    heatmap_loss = F.mse_loss(heatmaps, target_heatmaps)
+    pred_heatmaps_sigmoid = tf.sigmoid(pred_heatmaps)
+    heatmap_loss = tf.reduce_mean(tf.square(pred_heatmaps_sigmoid - target_heatmaps))
+    heatmap_coord_loss = tf.reduce_mean(
+        tf.square(heatmap_coords_norm - target_coords_norm)
+    )
 
-    # --- Loss координат с soft-argmax ---
-    heatmap_coord_loss = F.mse_loss(heatmap_coords_norm, target_coords_norm)
-
-    # --- Суммарный loss ---
     total_loss = alpha * heatmap_loss + beta * heatmap_coord_loss
-
     return total_loss, {
-        "heatmap_loss": alpha * heatmap_loss.item(),
-        "heatmap_coord_loss": beta * heatmap_coord_loss.item(),
+        "heatmap_loss": heatmap_loss,
+        "heatmap_coord_loss": heatmap_coord_loss,
     }
 
 
-def pck(preds, gts, threshold=0.1):
-    """
-    Percentage of Correct Keypoints (PCK): процент ключей, попавших в радиус threshold.
-    preds, gts: [B, N, 2]
-    """
-
-    preds = preds / config.regressor.heatmap_size
-    gts = gts / config.img_size
-
-    dist = torch.norm(preds - gts, dim=2)
-    correct = (dist < threshold).float()
-    correct *= 100
-    return correct.mean().item()
+def pck_tf(preds, gts, threshold=0.1):
+    # preds, gts: (batch_size, 33, 2), normalized coords [0..1]
+    dist = tf.norm(preds - gts, axis=-1)
+    correct = tf.cast(dist < threshold, tf.float32) * 100.0
+    return tf.reduce_mean(correct)
 
 
-# Преобразования для изображений
-transform = transforms.Compose(
-    [
-        transforms.Resize((config.img_size, config.img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ]
-)
-
-limb_connections = [
-    (0, 1),
-    (1, 2),
-    (2, 3),  # левая часть лица
-    (0, 4),
-    (4, 5),
-    (5, 6),  # правая часть лица
-    (2, 7),
-    (3, 7),  # левое ухо
-    (5, 8),
-    (6, 8),  # правое ухо
-    (7, 9),
-    (8, 10),  # рот
-    (9, 10),  # соединение рта
-    (11, 12),  # плечи
-    (12, 14),
-    (14, 16),  # правая рука
-    (16, 18),
-    (18, 20),
-    (16, 20),  # правая кисть
-    (11, 13),
-    (13, 15),  # левая рука
-    (15, 17),
-    (17, 19),
-    (15, 19),  # левая кисть
-    (11, 23),
-    (12, 24),  # туловище к бедрам
-    (23, 25),
-    (25, 27),
-    (27, 29),
-    (29, 31),  # левая нога
-    (23, 24),  # соединение бедер
-    (24, 26),
-    (26, 28),
-    (28, 30),
-    (30, 32),  # правая нога
-]
-
-# Загрузка данных
-dataset = DepthKeypointDataset(transform=transform, limb_connections=limb_connections)
+@tf.function
+def train_step(images, target_coords, target_heatmaps):
+    with tf.GradientTape() as tape:
+        pred_heatmaps = model(images, training=True)
+        loss, loss_dict = compute_losses_tf(
+            pred_heatmaps, target_coords, target_heatmaps, alpha=10.0, beta=10.0
+        )
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss, loss_dict
 
 
-# Разделение на обучающую и валидационную выборки
-_train_dataset, _val_dataset = train_test_split(
-    np.arange(len(dataset)), test_size=0.2, random_state=42, shuffle=True
-)
+@tf.function
+def val_step(images):
+    pred_heatmaps = model(images, training=False)
+    return pred_heatmaps
 
-train_dataset = Subset(dataset, _train_dataset)
-val_dataset = Subset(dataset, _val_dataset)
-
-
-# Создание DataLoader
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=config.batch,
-    shuffle=True,
-    pin_memory=True,
-)
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=config.batch,
-    shuffle=False,
-    pin_memory=True,
-)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# чисто ищем видеоядро
-# Инициализация модели, функции потерь и оптимизатора
-model = BlazePoseLite().to(device)
-criterion = nn.SmoothL1Loss().to(device)  # Функция потерь для координат ключевых точек
-optimizer = optim.AdamW(model.parameters(), lr=0.0001)
-
-num_epochs = 150
-idx = 0
-best_val_loss = 0
-best_pck = 0
 
 if __name__ == "__main__":
     config.init_checkpoint("regressor")
-    for epoch in range(num_epochs):
-        model.train()
-        for batch in tqdm(
-            train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} - Training"
-        ):
-            images = batch["image"].to(device)  # [B, 1, 128, 128]
-            target_coords = batch["keypoints"][:, :, :2].to(device)  # [B, N, 2]
-            target_heatmaps = batch["heatmaps"].to(device)  # [B, N, H, W]
 
-            optimizer.zero_grad()
+    # Загрузка исходного датасета (csv)
+    full_df = pd.read_csv(config.regressor.csv_file)
 
-            # --- Новый вызов модели ---
-            pred_heatmaps = model(images)
+    # Разбиение на train/val
+    train_df, val_df = train_test_split(
+        full_df, test_size=0.2, random_state=42, shuffle=True
+    )
 
-            # --- Лосс ---
-            loss, loss_dict = compute_losses(
-                heatmaps=pred_heatmaps,
-                target_coords=target_coords,
-                target_heatmaps=target_heatmaps,
-                alpha=10.0,
-                beta=10.0,
-            )
+    train_dataset = DepthKeypointDataset(train_df).get_dataset(
+        batch_size=32, shuffle=True
+    )
+    val_dataset = DepthKeypointDataset(val_df).get_dataset(batch_size=32, shuffle=True)
 
-            loss.backward()
-            optimizer.step()
+    model = build_blazepose_lite()
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
-            idx += 1
+    num_epochs = 150
+    best_pck = 0.0
 
-        # --- Валидация ---
-        with torch.no_grad():
-            model.eval()
-            val_batch = next(iter(val_loader))
-            val_images = val_batch["image"].to(device)
-            val_target_coords = val_batch["keypoints"][:, :, :2].to(device)
-            val_target_heatmaps = val_batch["heatmaps"].to(device)
+    with Live(refresh_per_second=4) as live:
+        for epoch in range(num_epochs):
+            train_losses = []
+            for batch in train_dataset:
+                images, target_coords, target_heatmaps = batch
+                loss, _ = train_step(images, target_coords, target_heatmaps)
+                train_losses.append(loss.numpy())
 
-            val_heatmaps = model(val_images)
-            val_heatmap_coords = soft_argmax_2d(val_heatmaps)
+            avg_train_loss = np.mean(train_losses)
 
-            raw_heatmap = val_heatmaps[0, 0]  # [H, W] для 1-й точки 1-го объекта
+            val_pcks = []
+            val_losses = []
+            for i, batch in enumerate(val_dataset):
+                images, keypoints, heatmaps = batch
+                heatmaps_pred = val_step(images)
+                keypoints_pred = soft_argmax_2d(heatmaps_pred)
 
-            print("\n--- Heatmap stats for keypoint 0 ---")
-            print("Shape:", raw_heatmap.shape)
-            print("Min:", raw_heatmap.min().item())
-            print("Max:", raw_heatmap.max().item())
-            print("Mean:", raw_heatmap.mean().item())
-            print("Std:", raw_heatmap.std().item())
-
-            # Если ты используешь softmax-heatmaps, можешь посчитать энтропию:
-            p = raw_heatmap.flatten()
-            p = p - p.max()  # стабильность softmax
-            p = torch.softmax(p, dim=0)
-            entropy = -(p * torch.log(p + 1e-8)).sum()
-            print("Entropy:", entropy.item())
-
-            # Печать самой карты в текстовом виде — опционально
-            print("\nHeatmap values (rounded):")
-            print(torch.round(raw_heatmap * 100) / 100)  # округлим для наглядности
-
-            # PCK по координатам из тепловых карт (heatmap_coords)
-            val_pck_heatmap = pck(val_heatmap_coords, val_target_coords)
-
-            # 💾 Сохраняем лучшую модель по PCK heatmaps
-            if val_pck_heatmap > best_pck:
-                config.checkpoint.mkdir(exist_ok=True, parents=True)
-                best_pck = val_pck_heatmap
-                torch.save(
-                    model.state_dict(),
-                    config.checkpoint / "weights.pth",
+                loss, _ = compute_losses_tf(
+                    pred_heatmaps=heatmaps_pred,
+                    target_coords=keypoints,
+                    target_heatmaps=heatmaps,
                 )
-                print(f"✅ Saved best model by PCK ({best_pck:.2f})")
+                val_losses.append(loss.numpy())
 
-            print(
-                f"Epoch {epoch} | Total Loss: {loss.item():.4f} | "
-                f"Heatmap: {loss_dict['heatmap_loss']:.4f} | "
-                f"Coord (soft-argmax): {loss_dict['heatmap_coord_loss']:.4f} | "
-                f"PCK Heatmaps: {val_pck_heatmap:.4f} | "
+                val_pck = pck_tf(preds=keypoints_pred, gts=keypoints)
+                val_pcks.append(val_pck)
+
+                if i == 0:
+                    visualize(
+                        image=images[0],
+                        heatmaps_pred=heatmaps_pred[0],
+                        pred_points=keypoints_pred[0],
+                        gt_points=keypoints[0],
+                        gt_heatmaps=heatmaps[0],
+                    )
+
+            avg_val_pck = np.mean(val_pcks)
+
+            avg_val_loss = np.mean(val_losses)
+
+            saved = ""
+            if avg_val_pck > best_pck:
+                best_pck = avg_val_pck
+                model.save_weights(str(config.checkpoint / "best_model_tf.weights.h5"))
+                saved = "🏆"
+
+            status_text = Text(
+                f"Epoch {epoch + 1}/{num_epochs} | "
+                f"Train Loss: {avg_train_loss:.4f} | "
+                f"Val Loss: {avg_val_loss:.4f} | "
+                f"Val PCK: {avg_val_pck:.2f}% {saved}",
+                style="bold green",
             )
 
-            # --- Визуализация ---
-            visualize_keypoints_with_heatmaps(
-                image=val_images[0].cpu(),
-                heatmaps=val_heatmaps[0].cpu(),
-                pred_points=val_heatmap_coords[0].cpu().numpy(),
-                gt_points=val_target_coords[0].cpu().numpy(),
-                limb_connections=limb_connections,
-                epoch=epoch,
-                sample_idx=0,
-                gt_heatmaps=val_target_heatmaps[0].cpu(),
-            )
+            # Обновляем отображение в live
+            live.update(status_text)
+
+    console.print("[bold green]Training completed.[/]")

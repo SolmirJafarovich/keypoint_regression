@@ -5,21 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10, <3.11"
 dependencies = [
-    "torch",
     "typer",
     "pydantic",
-    "tensorflow==2.12",
-    "torchvision>=0.22.0",
+    "tensorflow[and-cuda]",
     "opencv-python",
     "pandas",
     "matplotlib",
-    "torchmetrics>=1.7.1",
-    "onnx-tf",
-    "tensorflow-probability==0.20.0",
-    "tensorflow-addons==0.20.0",
-    "tf_keras",
-    "tqdm>=4.67.1",
+    "tqdm",
+    "scikit-learn>=1.6.1",
 ]
 
-[tool.uv.sources]
-onnx-tf = { git = "https://github.com/onnx/onnx-tensorflow.git", rev = "e2a8a71d0ab1788b3d0ceffe1aa13856e56b8065" }
