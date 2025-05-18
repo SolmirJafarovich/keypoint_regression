@@ -7,17 +7,22 @@ requires-python = ">=3.10, <3.11"
 dependencies = [
     "torch",
     "tensorflow==2.12",
-    "onnx-tf",
     "typer",
     "pydantic",
-    "tensorflow-probability==0.20.0",
-    "tensorflow-addons==0.20.0",
-    "tf_keras",
     "torchvision>=0.22.0",
     "opencv-python",
     "pandas",
     "matplotlib",
     "torchmetrics>=1.7.1",
+]
+
+[project.optional-dependencies]
+convert-onnx = [
+    "torch",
+    "onnx-tf",
+    "tensorflow-probability==0.20.0",
+    "tensorflow-addons==0.20.0",
+    "tf_keras",
 ]
 [tool.uv.sources]
 onnx-tf = { git = "https://github.com/onnx/onnx-tensorflow.git", rev = "e2a8a71d0ab1788b3d0ceffe1aa13856e56b8065" }
