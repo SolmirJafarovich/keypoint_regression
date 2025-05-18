@@ -32,9 +32,16 @@ RUN apt-get update && \
 
 # Install Python dependencies with uv (using lockfile)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=/home/uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=/home/pyproject.toml \
     uv sync --frozen --no-install-project --no-dev
+
+# Устанавливаем OpenCV и его зависимости
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3-opencv libopencv-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy source and install the project itself
 ADD . /home
