@@ -1,195 +1,91 @@
-import json
+import numpy as np
 import time
-from pathlib import Path
+import json
 from statistics import mean
-from typing import Annotated
+from pycoral.utils.edgetpu import make_interpreter, run_inference
+from pycoral.adapters.common import input_size
 
-import torch
-import typer
-from pydantic import BaseModel, ConfigDict
+NUM_IMAGES = 100
 
-from src.config import config, device
-from src.models import ClassifierWrapper, RegressorWrapper, BlazePoseLite, CombinedClassifier
-from src.utils import soft_argmax_2d
+def load_model(model_path: str):
+    interpreter = make_interpreter(model_path)
+    interpreter.allocate_tensors()
+    return interpreter
 
-from torchmetrics import Accuracy, F1Score, Precision, Recall
-from rich.progress import track
+def generate_images(input_shape, num_images):
+    h, w = input_shape
+    return [np.random.randint(0, 256, (h, w, 1), dtype=np.uint8) for _ in range(num_images)]
 
-app = typer.Typer()
+def quantize_uint8(array, scale, zero_point):
+    return np.clip(np.round(array / scale + zero_point), 0, 255).astype(np.uint8)
 
+def run_dual_inference(interpreter1, interpreter2, inputs):
+    times1, times2 = [], []
 
-class InferenceStep(BaseModel):
-    preds: torch.Tensor
-    targets: torch.Tensor
-    time: float  # seconds
-    extra: dict = {}
+    input_details2 = interpreter2.get_input_details()
+    output_details1 = interpreter1.get_output_details()[0]
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    for image in inputs:
+        # --- Модель 1 (регрессор) ---
+        start1 = time.perf_counter()
+        run_inference(interpreter1, image)
+        end1 = time.perf_counter()
+        times1.append(end1 - start1)
 
+        # Получение выходных данных (предсказанные ключевые точки в float32)
+        output1 = interpreter1.get_tensor(output_details1['index'])[0]
 
-class PytorchInferenceGenerator:
-    def __init__(self, regressor_path: Path, classifier_path: Path):
-        self.regressor = BlazePoseLite()
-        state_dict = torch.load(regressor_path / "weights.pth", weights_only=True)
-        self.regressor.load_state_dict(state_dict)
+        # --- Модель 2 (классификатор) ---
+        start2 = time.perf_counter()
 
-        self.classifier = CombinedClassifier()
-        state_dict = torch.load(classifier_path / "weights.pth", weights_only=True)
-        self.classifier.load_state_dict(state_dict)
+        # Вход 0: изображение
+        interpreter2.set_tensor(input_details2[0]['index'], np.expand_dims(image, axis=0))
 
-        self.regressor.eval()
-        self.classifier.eval()
+        # Вход 1: предсказанные keypoints → квантованные в uint8
+        keypoint_input_details = input_details2[1]
+        kp_scale, kp_zero_point = keypoint_input_details['quantization']
+        keypoints_uint8 = quantize_uint8(output1, kp_scale, kp_zero_point)
+        keypoints_uint8 = np.expand_dims(keypoints_uint8, axis=0)  # (1, 66)
 
-    def __call__(self, num_images=100) -> list[InferenceStep]:
-        steps = []
-        with torch.no_grad():
-            for _ in range(num_images):
-                # Случайное изображение-одноканальный шум
-                image = torch.randint(0, 256, (1, 1, 224, 224), dtype=torch.uint8)
-                image = image.float() / 255.0  # float32 для модели
+        interpreter2.set_tensor(keypoint_input_details['index'], keypoints_uint8)
 
-                target = torch.tensor([0])  # фиктивная метка
+        interpreter2.invoke()
+        end2 = time.perf_counter()
+        times2.append(end2 - start2)
 
-                start_reg = time.perf_counter()
-                heatmaps = self.regressor(image)
-                keypoints = soft_argmax_2d(heatmaps)
-                keypoints = keypoints.view(keypoints.shape[0], -1)
-                end_reg = time.perf_counter()
+    return times1, times2
 
-                start_clf = time.perf_counter()
-                preds = self.classifier(image, keypoints)
-                end_clf = time.perf_counter()
+def main():
+    model1_path = "data/checkpoints/regressor/weights_quant_edgetpu.tflite"
+    model2_path = "data/checkpoints/classifier/weights_quant_edgetpu.tflite"
 
-                steps.append(
-                    InferenceStep(
-                        preds=preds,
-                        targets=target,
-                        time=end_clf - start_reg,
-                        extra={
-                            "reg_time": end_reg - start_reg,
-                            "clf_time": end_clf - start_clf,
-                        },
-                    )
-                )
-        return steps
+    interpreter1 = load_model(model1_path)
+    interpreter2 = load_model(model2_path)
 
+    input_shape1 = input_size(interpreter1)
+    input_shape2 = input_size(interpreter2)
 
-class InferenceGenerator:
-    def __init__(self, regressor_path: Path, classifier_path: Path):
-        self.regressor = (
-            RegressorWrapper(regressor_path / "weights_quant.tflite").eval().to(device)
-        )
-        self.classifier = (
-            ClassifierWrapper(classifier_path / "weights_quant.tflite").eval().to(device)
-        )
+    if input_shape1 != input_shape2:
+        raise ValueError("Модели имеют разные размеры входных изображений.")
 
-    def __call__(self, num_images=100) -> list[InferenceStep]:
-        steps = []
-        with torch.no_grad():
-            for _ in range(num_images):
-                image = torch.randint(0, 256, (1, 1, 224, 224), dtype=torch.uint8).to(device)
-                image_float = image.float() / 255.0
+    inputs = generate_images(input_shape1, NUM_IMAGES)
 
-                target = torch.tensor([0])  # фиктивная метка
+    times1, times2 = run_dual_inference(interpreter1, interpreter2, inputs)
 
-                start_reg = time.perf_counter()
-                heatmaps = self.regressor(image_float)
-                keypoints = soft_argmax_2d(heatmaps)
-                keypoints = (keypoints * 255).to(torch.uint8)
-                end_reg = time.perf_counter()
+    result = {
+        "model_1_avg_time": mean(times1),
+        "model_2_avg_time": mean(times2),
+        "model_1_total_time": sum(times1),
+        "model_2_total_time": sum(times2),
+        "images_processed": NUM_IMAGES
+    }
 
-                start_clf = time.perf_counter()
-                preds = self.classifier(image, keypoints)
-                preds = (preds / 255).to(torch.float)
-                end_clf = time.perf_counter()
+    print("Среднее время инференса:")
+    print("  Модель 1:", result["model_1_avg_time"])
+    print("  Модель 2:", result["model_2_avg_time"])
 
-                steps.append(
-                    InferenceStep(
-                        preds=preds,
-                        targets=target,
-                        time=end_clf - start_reg,
-                        extra={
-                            "reg_time": end_reg - start_reg,
-                            "clf_time": end_clf - start_clf,
-                        },
-                    )
-                )
-        return steps
-
-
-class Metrics:
-    def __init__(self):
-        self.metrics = {
-            "Accuracy": Accuracy(
-                task="multiclass",
-                num_classes=config.classifier.num_classes,
-                average="weighted",
-            ),
-            "Precision": Precision(
-                task="multiclass",
-                num_classes=config.classifier.num_classes,
-                average="weighted",
-            ),
-            "Recall": Recall(
-                task="multiclass",
-                num_classes=config.classifier.num_classes,
-                average="weighted",
-            ),
-            "F1": F1Score(
-                task="multiclass",
-                num_classes=config.classifier.num_classes,
-                average="weighted",
-            ),
-        }
-
-    def update(self, preds, targets):
-        for _, metric in self.metrics.items():
-            metric.update(preds, targets)
-
-    def compute(self):
-        result = {}
-        for name, metric in self.metrics.items():
-            result[name] = metric.compute().cpu().tolist()
-        return result
-
-
-@app.command()
-def evaluate(
-    reg: Path = typer.Option(..., help="Path to regressor folder"),
-    cl: Path = typer.Option(..., help="Path to classifier folder"),
-    pytorch: Annotated[bool, typer.Option("--pytorch")] = False,
-):
-    config.init_checkpoint("metrics")
-    metrics = Metrics()
-
-    if pytorch:
-        generator = PytorchInferenceGenerator(regressor_path=reg, classifier_path=cl)
-    else:
-        generator = InferenceGenerator(regressor_path=reg, classifier_path=cl)
-
-    steps = list(track(generator(), description="Evaluating"))
-
-    # метрики (условные, т.к. метки фиктивны)
-    for step in steps:
-        metrics.update(preds=step.preds, targets=step.targets)
-
-    computed = metrics.compute()
-
-    times = [s.time for s in steps]
-    reg_times = [s.extra["reg_time"] for s in steps]
-    clf_times = [s.extra["clf_time"] for s in steps]
-
-    computed["Average Total Time"] = mean(times)
-    computed["Average Regressor Time"] = mean(reg_times)
-    computed["Average Classifier Time"] = mean(clf_times)
-
-    typer.echo("=== METRICS ===")
-    for k, v in computed.items():
-        typer.echo(f"{k:25s}: {v:.6f}")
-
-    with open(config.checkpoint / "metrics.json", "w") as f:
-        json.dump(computed, f, indent=4)
-
+    with open("dual_model_metrics.json", "w") as f:
+        json.dump(result, f, indent=2)
 
 if __name__ == "__main__":
-    app()
+    main()
