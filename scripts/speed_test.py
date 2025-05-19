@@ -1,104 +1,86 @@
-import numpy as np
 import time
-import json
+from pathlib import Path
 from statistics import mean
-from pycoral.utils.edgetpu import make_interpreter, run_inference
-from pycoral.adapters.common import set_input
-from typing import List
+from typing import Annotated
 
-NUM_IMAGES = 100
+import numpy as np
+import typer
+from PIL import Image
 
-def load_model(model_path: str):
-    interpreter = make_interpreter(model_path)
+from src.config import config
+
+app = typer.Typer(pretty_exceptions_enable=False, pretty_exceptions_short=True)
+
+
+def load_and_preprocess_image(image_path: Path):
+    # Load image as grayscale
+    image = (
+        Image.open(image_path).convert("L").resize((config.img_size, config.img_size))
+    )
+    image_np = np.array(image, dtype=np.float32) / 255.0
+    image_np = np.expand_dims(image_np, axis=-1)  # shape: (224, 224, 1)
+    return image_np
+
+
+def _regressor_gen():
+    for ext in ("*.jpg", "*.png"):
+        for fname in config.regressor.img_dir.glob(ext):
+            yield load_and_preprocess_image(fname)
+
+
+def inference_cpu(tflite: Path):
+    import tensorflow as tf
+
+    interpreter = tf.lite.Interpreter(model_path=str(tflite))
     interpreter.allocate_tensors()
-    return interpreter
 
-def get_image_input_shape(interpreter, image_input_index: int):
     input_details = interpreter.get_input_details()
-    shape = input_details[image_input_index]['shape']
-    if len(shape) == 4:
-        return tuple(shape[1:3])  # (H, W)
-    elif len(shape) == 3:
-        return tuple(shape[0:2])  # (H, W)
-    else:
-        raise ValueError(f"Unexpected input shape: {shape}")
-
-def generate_images(input_shape, num_images):
-    h, w = input_shape
-    return [np.random.randint(0, 256, (h, w, 1), dtype=np.uint8) for _ in range(num_images)]
-
-def generate_extra_inputs(num_images, feature_size=66):
-    return [np.random.randint(0, 256, (feature_size,), dtype=np.uint8) for _ in range(num_images)]
-
-def run_inference_loop_single_input(interpreter, inputs: List[np.ndarray], input_index: int):
+    scale, zero_point = input_details[0]["quantization"]
     times = []
-    for image in inputs:
+    for image in _regressor_gen():
+        image = np.expand_dims(image, axis=0)
+        image = image / scale + zero_point
+        image = np.clip(image, 0, 255).astype(input_details[0]["dtype"])
+        interpreter.set_tensor(input_details[0]["index"], image)
+        start = time.perf_counter()
+        interpreter.invoke()
+        end = time.perf_counter()
+        times.append(end - start)
+
+    return mean(times)
+
+
+def inference_tpu(tflite: Path = Path("weights_edgetpu.tflite")):
+    from pycoral.adapters.common import set_input
+    from pycoral.utils.edgetpu import make_interpreter
+
+    interpreter = make_interpreter(tflite)
+    interpreter.allocate_tensors()
+
+    input_index = interpreter.get_input_details()[0]["index"]
+    times = []
+    for image in _regressor_gen():
         set_input(interpreter, image, input_index=input_index)
         start = time.perf_counter()
         interpreter.invoke()
         end = time.perf_counter()
         times.append(end - start)
-    return times
 
-def run_inference_loop_dual_input(interpreter, images: List[np.ndarray], extras: List[np.ndarray], image_index: int, extra_index: int):
-    input_details = interpreter.get_input_details()
-    times = []
-    for image, extra in zip(images, extras):
-        set_input(interpreter, image, input_index=image_index)
-        interpreter.set_tensor(input_details[extra_index]['index'], np.expand_dims(extra, axis=0))
-        start = time.perf_counter()
-        interpreter.invoke()
-        end = time.perf_counter()
-        times.append(end - start)
-    return times
+    return mean(times)
 
-def main():
-    model1_path = "weights_regressor_edgetpu.tflite"
-    model2_path = "weights_classifier_edgetpu.tflite"
 
-    interpreter1 = load_model(model1_path)
-    interpreter2 = load_model(model2_path)
+@app.command()
+def speed_test(
+    tflite: Path = typer.Option("--tflite"),
+    cpu: Annotated[bool, typer.Option("--cpu")] = False,
+):
+    if cpu:
+        _time = inference_cpu(tflite)
+    else:
+        _time = inference_tpu(tflite)
 
-    # Явно указываем входы
-    input_details1 = interpreter1.get_input_details()
-    input_details2 = interpreter2.get_input_details()
+    print("  Regressor:", _time)
 
-    image_input_index1 = 0  # Модель 1 — только изображение
-    image_input_index2 = 0  # Модель 2 — первый вход — изображение
-    extra_input_index2 = 1  # Модель 2 — второй вход — 66 чисел
-
-    # Получаем размер входного изображения
-    input_shape1 = get_image_input_shape(interpreter1, image_input_index1)
-    input_shape2 = get_image_input_shape(interpreter2, image_input_index2)
-
-    if input_shape1 != input_shape2:
-        raise ValueError("Модели имеют разные размеры входных изображений.")
-
-    # Генерация тестовых данных
-    images = generate_images(input_shape1, NUM_IMAGES)
-    extras = generate_extra_inputs(NUM_IMAGES, feature_size=66)
-
-    # Инференс первой модели (только изображение)
-    times1 = run_inference_loop_single_input(interpreter1, images, input_index=image_input_index1)
-
-    # Инференс второй модели (изображение + 66 чисел)
-    times2 = run_inference_loop_dual_input(
-        interpreter2, images, extras,
-        image_index=image_input_index2,
-        extra_index=extra_input_index2
-    )
-
-    result = {
-        "model_1_avg_time": mean(times1),
-        "model_2_avg_time": mean(times2),
-        "model_1_total_time": sum(times1),
-        "model_2_total_time": sum(times2),
-        "images_processed": NUM_IMAGES
-    }
-
-    print("Среднее время инференса:")
-    print("  Модель 1:", result["model_1_avg_time"])
-    print("  Модель 2:", result["model_2_avg_time"])
 
 if __name__ == "__main__":
-    main()
+    app()

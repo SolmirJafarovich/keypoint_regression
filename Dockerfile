@@ -22,9 +22,16 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Installing edge-tpu-compiler
+RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - && \
+    echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | tee /etc/apt/sources.list.d/coral-edgetpu.list && \
+    apt-get update && \
+    apt-get install edgetpu-compiler
+
 # USB Acceleration setup guide
 RUN git clone https://github.com/google-coral/pycoral && \
     cd pycoral && \
-    bash examples/install_requirements.sh classify_image.py
+    bash examples/install_requirements.sh classify_image.py && \
+    python3 -m pip install pydantic typer
 
 ADD . /home

@@ -30,7 +30,7 @@ def ResidualBlock(x, channels):
 def build_blazepose_lite(
     input_shape=(config.img_size, config.img_size, 1), heatmap_size=64, num_keypoints=33
 ):
-    inputs = layers.Input(shape=input_shape)
+    inputs = layers.Input(shape=input_shape, batch_size=1)
 
     # --- Encoder ---
     e1 = DepthwiseSeparableConv(inputs, 16, stride=2)  # 128 -> 64
@@ -45,9 +45,8 @@ def build_blazepose_lite(
     b = ResidualBlock(b, 192)
 
     # --- Decoder ---
-    b_up = layers.Lambda(
-        lambda x: tf.image.resize(x[0], tf.shape(x[1])[1:3], method="bilinear")
-    )([b, e4])
+    b_up = layers.UpSampling2D(size=(2, 2), interpolation="bilinear")(b)
+
     d4 = layers.Concatenate()([b_up, e4])
     d4 = layers.Conv2DTranspose(128, 2, strides=2)(d4)  # 4 -> 8
 
@@ -62,12 +61,7 @@ def build_blazepose_lite(
 
     # --- Heatmap Output ---
     heatmaps = layers.Conv2D(num_keypoints, kernel_size=1)(d1)
-    heatmaps = layers.Lambda(
-        lambda x: tf.image.resize(x, (heatmap_size, heatmap_size), method="bilinear")
-    )(heatmaps)
-
-    # Контрастность
-    heatmaps = layers.Lambda(lambda x: 15 * x)(heatmaps)
+    heatmaps = layers.Resizing(64, 64, interpolation="bilinear")(heatmaps)
 
     return Model(inputs=inputs, outputs=heatmaps)
 

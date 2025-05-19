@@ -409,7 +409,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pydantic" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
-    { name = "tensorflow", extras = ["and-cuda"] },
+    { name = "tensorflow", extras = ["and-cuda"], specifier = ">=2.3.0" },
     { name = "tqdm" },
     { name = "typer" },
 ]
