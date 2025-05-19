@@ -11,6 +11,7 @@ from rich.progress import track
 
 from src.config import config
 from src.dataset import DepthKeypointDataset
+from src.dataset_cl import KeypointPrecomputedDatasetTF
 
 app = typer.Typer(pretty_exceptions_enable=False, pretty_exceptions_short=True)
 console = Console()
@@ -27,7 +28,16 @@ def _regressor_gen():
 
 
 def _classifier_gen():
-    pass
+    full_df = pd.read_csv(config.regressor.csv_file)
+    full_df = full_df[:100]
+
+    dataset = DepthKeypointDataset(full_df).get_dataset(batch_size=1)
+
+    for batch in track(dataset, description="Generating representative dataset"):
+        # Ожидаем структуру: (images, keypoints, labels)
+        images, keypoints, _ = batch
+        yield [images, keypoints]
+
 
 
 @app.command()
@@ -37,11 +47,14 @@ def convert(
 ):
     # === TensorFlow SavedModel -> TFLite (with quantization) ===
     console.rule("[bold blue]TensorFlow → TFLite INT8")
-    model = tf.keras.models.load_model(str(checkpoint / "weights.keras"))
-    print("Original input shape:", model.input.shape)
+    model = tf.keras.models.load_model(str(checkpoint / "classifier.keras"))
+    print("Original input shape:", model.input)
 
     # Создаем новый Input с фиксированным batch size = 1
-    new_input = tf.keras.Input(shape=model.input.shape[1:], batch_size=1)
+    if is_classifier:
+        new_input = [tf.keras.Input(shape=model.input[0].shape[1:], batch_size=1), tf.keras.Input(shape=model.input[1].shape[1:], batch_size=1)]
+    else:
+        new_input = tf.keras.Input(shape=model.input.shape[1:], batch_size=1)
 
     # Получаем выходы модели на новом входе
     new_outputs = model(new_input)
@@ -49,8 +62,8 @@ def convert(
     # Создаем новую модель с фиксированным batch size
     model_fixed = tf.keras.Model(inputs=new_input, outputs=new_outputs)
 
-    print("New input shape:", model_fixed.input.shape)
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    print("New input shape:", model_fixed.input)
+    converter = tf.lite.TFLiteConverter.from_keras_model(model_fixed)
     # https://ai.google.dev/edge/litert/models/post_training_quantization
     converter.experimental_enable_resource_variables = False
     converter.optimizations = [tf.lite.Optimize.DEFAULT]

@@ -57,12 +57,15 @@ class KeypointPrecomputedDatasetTF:
 
 
     def _load_image(self, image_path):
-        image_path = image_path.decode("utf-8")  # tf.numpy_function передаёт bytes
+        if isinstance(image_path, bytes):  # <-- добавлено
+            image_path = image_path.decode("utf-8")
+    
         img = Image.open(image_path).convert("L")
         img = img.resize((self.img_size, self.img_size))
         img = np.asarray(img, dtype=np.float32) / 255.0
         img = np.expand_dims(img, axis=-1)
         return img
+
 
     def _make_tf_dataset(self, samples, batch_size=64, shuffle=True):
         image_paths, keypoints, labels = zip(*samples)

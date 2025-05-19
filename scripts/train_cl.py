@@ -1,97 +1,122 @@
-import os
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import tensorflow as tf
-from tensorflow.keras.callbacks import Callback
-from tqdm import tqdm
+from rich.console import Console
+from rich.live import Live
+from rich.text import Text
+from sklearn.model_selection import train_test_split
 
-from src.config import config
+from src.models.classifier import build_combined_classifier
 from src.dataset_cl import KeypointPrecomputedDatasetTF
-from src.models import build_combined_classifier
+from src.config import config
 
-# Параметры
-img_size = config.img_size
-batch_size = 64
-num_epochs = 20
-output_dir = "./data/classifier_tf/output"
-os.makedirs(output_dir, exist_ok=True)
+console = Console()
 
-# Загрузка датасета
-dataset = KeypointPrecomputedDatasetTF(
-    root_dir="../depth",
-    keypoint_file="./data/raw/cached_keypoints1_flattened.json",
-    img_size=config.img_size
-)
+# --- Метрики ---
+def compute_accuracy(preds, labels):
+    correct = tf.equal(tf.argmax(preds, axis=1), tf.argmax(labels, axis=1))
+    return tf.reduce_mean(tf.cast(correct, tf.float32)) * 100.0
 
+@tf.function
+def train_step(images, keypoints, labels):
+    with tf.GradientTape() as tape:
+        preds = model([images, keypoints], training=True)
+        loss = tf.keras.losses.categorical_crossentropy(labels, preds)
+        loss = tf.reduce_mean(loss)
+    grads = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    acc = compute_accuracy(preds, labels)
+    return loss, acc
 
-# Разделение вручную (если хочешь контролировать баланс классов, перемешивание и т.п.)
-samples = dataset.samples
+@tf.function
+def val_step(images, keypoints, labels):
+    preds = model([images, keypoints], training=False)
+    loss = tf.keras.losses.categorical_crossentropy(labels, preds)
+    loss = tf.reduce_mean(loss)
+    acc = compute_accuracy(preds, labels)
+    return loss, acc
 
-print(f"[DEBUG] Кол-во samples: {len(samples)}")
-print(f"[DEBUG] Пример: {samples[:1]}")
+if __name__ == "__main__":
+    config.init_checkpoint("classifier")
 
-np.random.seed(42)
-np.random.shuffle(samples)
+    print(tf.test.gpu_device_name() or 'Используется CPU')
 
-split_index = int(0.7 * len(samples))
-train_samples = samples[:split_index]
-val_samples = samples[split_index:]
+    # Параметры
+    BATCH_SIZE = 64
+    IMG_SIZE = 224
+    EPOCHS = 100
 
-# Создание tf.data.Dataset
-train_ds = dataset.get_tf_dataset_from_samples(train_samples, batch_size=64, shuffle=True)
-val_ds = dataset.get_tf_dataset_from_samples(val_samples, batch_size=64, shuffle=False)
+    # Загружаем датасет
+    dataset = KeypointPrecomputedDatasetTF(
+        root_dir=config.classifier.image_root,
+        keypoint_file=config.classifier.keypoints_json,
+        img_size=IMG_SIZE,
+    )
 
-# Получим размерность координат ключевых точек
-keypoint_dim = len(train_samples[0][1])  # [img_path, keypoints, label]
+    # Получаем все данные
+    images, keypoints, labels = dataset.get_all_data()
 
-# Создание модели
-model = build_combined_classifier(
-    input_shape_img=(img_size, img_size, 1),
-    keypoint_dim=keypoint_dim,
-    num_classes=4,
-)
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(1e-3),
-    loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-    metrics=["accuracy"]
-)
+    # One-hot
+    labels = tf.keras.utils.to_categorical(labels, num_classes=4)
 
-# Кастомный callback для оценки F1, precision, recall
-class MetricsCallback(Callback):
-    def __init__(self, val_ds):
-        super().__init__()
-        self.val_ds = val_ds
-        self.best_acc = 0.0
+    # Сплит
+    (train_images, val_images,
+     train_kps, val_kps,
+     train_labels, val_labels) = train_test_split(
+        images, keypoints, labels,
+        test_size=0.2, random_state=42, shuffle=True
+    )
 
-    def on_epoch_end(self, epoch, logs=None):
-        y_true = []
-        y_pred = []
+    # Сборка датасетов
+    def make_ds(images, kps, labels, shuffle):
+        ds = tf.data.Dataset.from_tensor_slices(((images, kps), labels))
+        if shuffle:
+            ds = ds.shuffle(buffer_size=len(images))
+        return ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
 
-        for (img_batch, kp_batch), y_batch in self.val_ds:
-            preds = self.model.predict_on_batch([img_batch, kp_batch])
-            y_pred.extend(np.argmax(preds, axis=1))
-            y_true.extend(y_batch.numpy())
+    train_dataset = make_ds(train_images, train_kps, train_labels, shuffle=True)
+    val_dataset = make_ds(val_images, val_kps, val_labels, shuffle=False)
 
-        acc = accuracy_score(y_true, y_pred)
-        prec = precision_score(y_true, y_pred, average="weighted", zero_division=0)
-        rec = recall_score(y_true, y_pred, average="weighted", zero_division=0)
-        f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
+    # Модель
+    model = build_combined_classifier(
+        input_shape_img=(IMG_SIZE, IMG_SIZE, 1),
+        keypoint_dim=66,
+        num_classes=4
+    )
 
-        print(f"\nEpoch {epoch+1}")
-        print(f"Accuracy: {acc:.4f} | Precision: {prec:.4f} | Recall: {rec:.4f} | F1: {f1:.4f}")
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    best_acc = 0.0
 
-        if acc > self.best_acc:
-            self.best_acc = acc
-            self.model.save(os.path.join(output_dir, "best_classifier.h5"))
-            print(f"✅ Saved best model by accuracy ({self.best_acc:.2f})")
+    with Live(refresh_per_second=4) as live:
+        for epoch in range(EPOCHS):
+            train_losses, train_accuracies = [], []
+            for (images, keypoints), labels in train_dataset:
+                loss, acc = train_step(images, keypoints, labels)
+                train_losses.append(loss.numpy())
+                train_accuracies.append(acc.numpy())
 
+            val_losses, val_accuracies = [], []
+            for (images, keypoints), labels in val_dataset:
+                loss, acc = val_step(images, keypoints, labels)
+                val_losses.append(loss.numpy())
+                val_accuracies.append(acc.numpy())
 
-# Обучение
-model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=num_epochs,
-    callbacks=[MetricsCallback(val_ds)],
-    verbose=1  # можно заменить на tqdm отдельно
-)
+            avg_train_loss = np.mean(train_losses)
+            avg_train_acc = np.mean(train_accuracies)
+            avg_val_loss = np.mean(val_losses)
+            avg_val_acc = np.mean(val_accuracies)
+
+            saved = ""
+            if avg_val_acc > best_acc:
+                best_acc = avg_val_acc
+                model.save(config.checkpoint / "classifier.keras")
+                saved = "🏆"
+
+            status = Text(
+                f"Epoch {epoch + 1}/{EPOCHS} | "
+                f"Train Loss: {avg_train_loss:.4f}, Acc: {avg_train_acc:.2f}% | "
+                f"Val Loss: {avg_val_loss:.4f}, Acc: {avg_val_acc:.2f}% {saved}",
+                style="bold green"
+            )
+            live.update(status)
+
+    console.print("[bold green]Training complete.[/]")
