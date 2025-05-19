@@ -64,7 +64,7 @@ class MetricsCallback(Callback):
         self.val_ds = val_ds
         self.best_acc = 0.0
 
-def on_epoch_end(self, epoch, logs=None):
+    def on_epoch_end(self, epoch, logs=None):
         y_true = []
         y_pred = []
 
@@ -93,5 +93,5 @@ model.fit(
     validation_data=val_ds,
     epochs=num_epochs,
     callbacks=[MetricsCallback(val_ds)],
-    verbose=0  # можно заменить на tqdm отдельно
+    verbose=1  # можно заменить на tqdm отдельно
 )
