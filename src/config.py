@@ -29,7 +29,7 @@ class Config(BaseModel):
 
     def init_checkpoint(self, name: str):
         self.checkpoint = Path(
-            "./data/checkpoints/" + f"{name}_{datetime.now().strftime('%m%d_%H:%M:%S')}"
+            "./data/checkpoints/" + f"{name}_{datetime.now().strftime('%m%d_%H_%M_%S')}"
         )
         self.checkpoint.mkdir(parents=True, exist_ok=False)
 

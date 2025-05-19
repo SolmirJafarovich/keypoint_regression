@@ -36,17 +36,32 @@ def compute_losses_tf(
     }
 
 
-def pck_tf(preds, gts, threshold=0.1):
-    # preds, gts: (batch_size, 33, 2), normalized coords [0..1]
-    dist = tf.norm(preds - gts, axis=-1)
-    correct = tf.cast(dist < threshold, tf.float32) * 100.0
-    return tf.reduce_mean(correct)
+def pck_tf(preds: tf.Tensor, gts: tf.Tensor, threshold: float = 0.1) -> tf.Tensor:
+    """
+    Percentage of Correct Keypoints (PCK).
+    Assumes normalized coordinates in range [0, 1].
+
+    :param preds: Predicted keypoints, shape (B, N, 2)
+    :param gts: Ground-truth keypoints, shape (B, N, 2)
+    :param threshold: Distance threshold (normalized)
+    :return: Mean PCK over all keypoints and batch (0..100)
+    """
+    gts /= config.img_size
+
+    # Euclidean distance per keypoint
+    dist = tf.norm(preds - gts, axis=-1)  # shape: (B, N)
+
+    # Check which keypoints are correct
+    correct = tf.cast(dist < threshold, tf.float32)  # shape: (B, N)
+
+    # Percentage per keypoint
+    return tf.reduce_mean(correct) * 100.0
 
 
 @tf.function
 def train_step(images, target_coords, target_heatmaps):
     with tf.GradientTape() as tape:
-        pred_heatmaps = model(images, training=True)
+        pred_heatmaps = model(images, training=True) * 15
         loss, loss_dict = compute_losses_tf(
             pred_heatmaps, target_coords, target_heatmaps, alpha=10.0, beta=10.0
         )
@@ -57,7 +72,7 @@ def train_step(images, target_coords, target_heatmaps):
 
 @tf.function
 def val_step(images):
-    pred_heatmaps = model(images, training=False)
+    pred_heatmaps = model(images, training=False) * 15
     return pred_heatmaps
 
 
@@ -126,7 +141,8 @@ if __name__ == "__main__":
             saved = ""
             if avg_val_pck > best_pck:
                 best_pck = avg_val_pck
-                model.save_weights(str(config.checkpoint / "best_model_tf.weights.h5"))
+                model_path = config.checkpoint / "weights.keras"
+                model.save(model_path)  # Сохраняет модель целиком в формате SavedModel
                 saved = "🏆"
 
             status_text = Text(

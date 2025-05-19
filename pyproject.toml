@@ -7,7 +7,7 @@ requires-python = ">=3.10, <3.11"
 dependencies = [
     "typer",
     "pydantic",
-    "tensorflow[and-cuda]",
+    "tensorflow[and-cuda]>=2.3.0",
     "opencv-python",
     "pandas",
     "matplotlib",
